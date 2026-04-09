@@ -2,7 +2,6 @@ import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
   typescript: { ignoreBuildErrors: true },
-  eslint:     { ignoreDuringBuilds: true },
   serverExternalPackages: ['fluent-ffmpeg', '@ffmpeg-installer/ffmpeg', 'ffmpeg-static'],
   images: {
     remotePatterns: [
