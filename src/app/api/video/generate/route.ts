@@ -278,7 +278,7 @@ async function upscaleIfNeeded(buf: Buffer): Promise<Buffer> {
   console.log(`[upscale] ${meta.width}×${meta.height} — triggering Real-ESRGAN 4×`)
   try {
     const replicate = new Replicate({ auth: process.env.REPLICATE_API_TOKEN })
-    const blob      = new Blob([buf], { type: 'image/jpeg' })
+    const blob      = new Blob([new Uint8Array(buf)], { type: 'image/jpeg' })
 
     const output = await replicate.run(
       'nightmareai/real-esrgan:42fed1c4974146d4d2414e2be2c5277c7fcf05fcc3a73abf41610695738c1d7b',
@@ -562,7 +562,7 @@ What to ADJUST (lighting only):
       } catch (err) {
         console.error('[video/generate] error:', err)
         const message = err instanceof Error ? err.message : 'An unexpected error occurred'
-        await admin.from('video_jobs').update({ status: 'failed' }).eq('id', jobId).catch(() => {})
+        try { await admin.from('video_jobs').update({ status: 'failed' }).eq('id', jobId) } catch {}
         send('error', { message })
       } finally {
         controller.close()

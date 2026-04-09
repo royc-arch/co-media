@@ -578,7 +578,7 @@ The result must look like the exact same photo taken under different studio ligh
       } catch (err) {
         console.error('[transform] pipeline error:', err)
         const message = err instanceof Error ? err.message : 'An unexpected error occurred'
-        await admin.from('jobs').update({ status: 'failed' }).eq('id', jobId).catch(() => {})
+        try { await admin.from('jobs').update({ status: 'failed' }).eq('id', jobId) } catch {}
         send('error', { message })
       } finally {
         controller.close()

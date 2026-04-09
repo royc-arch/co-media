@@ -13,8 +13,7 @@ export default async function WorksPage() {
       .select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
     supabase.from('video_jobs')
       .select('*').eq('user_id', user.id).order('created_at', { ascending: false })
-      .then(r => r) // silently ignore if table not created yet
-      .catch(() => ({ data: [] })),
+      .then(r => r, () => ({ data: [] })),
   ])
 
   return (
