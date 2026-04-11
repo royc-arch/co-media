@@ -62,8 +62,8 @@ const SHOWCASE_CAMERA: Record<Exclude<ShowcaseType, 'three_act'>, {
   },
   detail: {
     shot:     'extreme macro close-up from first frame, lens already 8–12cm from food surface, ultra-shallow depth of field with 2–3cm focus plane, background fully out of focus',
-    movement: 'Camera very slowly and smoothly slide horizontally from left to right, approximately 3–5mm total travel over 5 seconds, stays at macro distance throughout, no vertical movement, no push, no zoom, no camera shake',
-    rhythm:   'holds the macro frame perfectly still for the full duration — texture and surface detail fill the frame throughout',
+    movement: 'camera track right — pure lateral translation only, constant macro distance maintained throughout, zero dolly, zero zoom, zero tilt, zero pan, zero rotation, very slow and smooth horizontal drift across food surface texture over the full 5 seconds',
+    rhythm:   'opens already in extreme close-up → imperceptibly slow rightward drift reveals adjacent surface texture → ends still in macro close-up',
   },
 }
 
