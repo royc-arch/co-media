@@ -24,10 +24,10 @@ export default function WorksClient({ jobs, videoJobs }: { jobs: Job[]; videoJob
 }
 
 function WorksInner({ jobs, videoJobs }: { jobs: Job[]; videoJobs: VideoJob[] }) {
-  const router     = useRouter()
-  const params     = useSearchParams()
-  const supabase   = createClient()
-  const filter     = (params.get('filter') ?? 'all') as Filter
+  const router   = useRouter()
+  const params   = useSearchParams()
+  const supabase = createClient()
+  const filter   = (params.get('filter') ?? 'all') as Filter
 
   async function signOut() {
     await supabase.auth.signOut()
@@ -42,97 +42,107 @@ function WorksInner({ jobs, videoJobs }: { jobs: Job[]; videoJobs: VideoJob[] })
     router.replace(`/history?${p}`)
   }
 
-  const donePhotos  = jobs.filter(j => j.status === 'done')
-  const doneVideos  = videoJobs.filter(v => v.status === 'done')
-  const totalDone   = donePhotos.length + doneVideos.length
-  const totalOther  = (jobs.length - donePhotos.length) + (videoJobs.length - doneVideos.length)
+  const donePhotos = jobs.filter(j => j.status === 'done')
+  const doneVideos = videoJobs.filter(v => v.status === 'done')
+  const totalDone  = donePhotos.length + doneVideos.length
+  const totalOther = (jobs.length - donePhotos.length) + (videoJobs.length - doneVideos.length)
 
-  const showPhotos  = filter === 'all' || filter === 'photos'
-  const showVideos  = filter === 'all' || filter === 'videos'
+  const showPhotos = filter === 'all' || filter === 'photos'
+  const showVideos = filter === 'all' || filter === 'videos'
 
-  // Merge and sort by created_at
   type AnyItem = { _type: 'photo'; data: Job } | { _type: 'video'; data: VideoJob }
   const items: AnyItem[] = [
-    ...(showPhotos ? jobs.map(j => ({ _type: 'photo' as const, data: j })) : []),
+    ...(showPhotos ? jobs.map(j     => ({ _type: 'photo' as const, data: j     })) : []),
     ...(showVideos ? videoJobs.map(v => ({ _type: 'video' as const, data: v })) : []),
   ].sort((a, b) =>
     new Date(b.data.created_at).getTime() - new Date(a.data.created_at).getTime()
   )
 
   return (
-    <div style={styles.page}>
-      <header style={styles.header}>
-        <div style={styles.headerInner}>
-          <a href="/" style={styles.logo}>
-            <span style={styles.logoIcon}>◈</span>
-            <span style={styles.logoText}>Co.Media</span>
-          </a>
-          <nav style={styles.nav}>
-            <a href="/" style={styles.navLink}>Style Transfer</a>
-            <span style={styles.navDivider}>·</span>
-            <a href="/showcase" style={styles.navLink}>Video Showcase</a>
-            <span style={styles.navDivider}>·</span>
-            <a href="/history" style={{ ...styles.navLink, color: 'var(--orange)' }}>Works</a>
-            <span style={styles.navDivider}>·</span>
-            <a href="/references" style={styles.navLink}>References</a>
-            <span style={styles.navDivider}>·</span>
-            <button onClick={signOut} style={styles.signOutBtn}>Sign Out</button>
-          </nav>
-        </div>
-      </header>
-
-      <main style={styles.main}>
-        <div style={styles.pageHeader} className="animate-fade-up">
-          <h1 style={styles.pageTitle}>Works</h1>
-          <p style={styles.pageSubtitle}>
-            {jobs.length + videoJobs.length === 0
-              ? 'No works yet'
-              : `${totalDone} completed · ${totalOther} in progress`}
-          </p>
+    <div style={s.page}>
+      <main style={s.main}>
+        {/* ── Page header ── */}
+        <div style={s.pageHeader} className="animate-fade-up">
+          <div>
+            <p style={s.eyebrow}>Your workspace</p>
+            <h1 style={s.title}>Works</h1>
+          </div>
+          <div style={s.headerStats}>
+            {jobs.length + videoJobs.length > 0 && (
+              <>
+                <div style={s.statPill}>
+                  <span style={{ ...s.statDot, background: 'var(--success)' }} />
+                  {totalDone} completed
+                </div>
+                {totalOther > 0 && (
+                  <div style={s.statPill}>
+                    <span style={{ ...s.statDot, background: 'var(--warning)', animation: 'pulse-gold 1.5s ease-in-out infinite' }} />
+                    {totalOther} in progress
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         </div>
 
-        {/* Filter tabs */}
+        {/* ── Filter tabs ── */}
         {(jobs.length + videoJobs.length > 0) && (
-          <div style={styles.filterRow} className="animate-fade-up">
+          <div style={s.filterRow} className="animate-fade-up">
             {([
-              ['all',    `All (${jobs.length + videoJobs.length})`],
-              ['photos', `Photos (${jobs.length})`],
-              ['videos', `Videos (${videoJobs.length})`],
-            ] as [Filter, string][]).map(([key, label]) => (
+              ['all',    `All`,     jobs.length + videoJobs.length],
+              ['photos', `Photos`,  jobs.length],
+              ['videos', `Videos`,  videoJobs.length],
+            ] as [Filter, string, number][]).map(([key, label, count]) => (
               <button
                 key={key}
                 onClick={() => setFilter(key)}
                 style={{
-                  ...styles.filterBtn,
-                  borderColor: filter === key ? 'var(--gold)'       : 'var(--border)',
-                  color:       filter === key ? 'var(--gold)'       : 'var(--text-muted)',
-                  background:  filter === key ? 'var(--gold-glow)'  : 'transparent',
+                  ...s.filterBtn,
+                  ...(filter === key ? s.filterBtnActive : {}),
                 }}
               >
                 {label}
+                <span style={{
+                  ...s.filterCount,
+                  ...(filter === key ? s.filterCountActive : {}),
+                }}>
+                  {count}
+                </span>
               </button>
             ))}
           </div>
         )}
 
+        {/* ── Grid ── */}
         {items.length === 0 ? (
-          <div style={styles.empty} className="animate-fade-up">
-            <span style={styles.emptyIcon}>◈</span>
-            <p style={styles.emptyText}>
+          <div style={s.empty} className="animate-fade-up">
+            <div style={s.emptyIconWrap}>
+              <span style={s.emptyIcon}>◈</span>
+            </div>
+            <p style={s.emptyTitle}>
               {filter === 'photos' ? 'No photo works yet.' :
                filter === 'videos' ? 'No video works yet.' :
                'Your works will appear here.'}
             </p>
-            <a href={filter === 'videos' ? '/showcase' : '/'} className="btn btn-gold" style={{ marginTop: 20 }}>
+            <p style={s.emptyDesc}>
+              {filter === 'videos'
+                ? 'Create a cinematic video from your dish photos.'
+                : 'Apply AI style transfer to your food photography.'}
+            </p>
+            <a
+              href={filter === 'videos' ? '/showcase' : '/'}
+              className="btn btn-gold"
+              style={{ marginTop: 8 }}
+            >
               {filter === 'videos' ? 'Create Video' : 'Start Transforming'}
             </a>
           </div>
         ) : (
-          <div style={styles.grid}>
+          <div style={s.grid}>
             {items.map((item, i) =>
               item._type === 'photo'
-                ? <PhotoCard key={item.data.id} job={item.data}         index={i} />
-                : <VideoCard key={item.data.id} job={item.data as VideoJob} index={i} />
+                ? <PhotoCard key={item.data.id} job={item.data}              index={i} />
+                : <VideoCard key={item.data.id} job={item.data as VideoJob}  index={i} />
             )}
           </div>
         )}
@@ -141,52 +151,67 @@ function WorksInner({ jobs, videoJobs }: { jobs: Job[]; videoJobs: VideoJob[] })
   )
 }
 
-// ── Photo card ────────────────────────────────────────────────────────────────
+// ── Photo card ─────────────────────────────────────────────────────────────────
 
 function PhotoCard({ job, index }: { job: Job; index: number }) {
   const date = new Date(job.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
   const time = new Date(job.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
 
   return (
-    <div style={{ ...styles.card, animationDelay: `${index * 50}ms` }} className="animate-fade-up">
-      <div style={styles.cardTypeBadge}>
-        <span style={{ color: 'var(--gold-dim)' }}>◈</span> Photo
+    <div
+      style={{ ...s.card, animationDelay: `${index * 40}ms` }}
+      className="animate-fade-up"
+    >
+      <div style={s.cardHeader}>
+        <span className="badge badge-default">
+          <span style={{ color: 'var(--orange)' }}>◈</span> Photo
+        </span>
+        <span style={s.cardTime}>{date}</span>
       </div>
 
-      <div style={styles.imageRow}>
-        <div style={styles.imageSlot}>
-          <label style={styles.imageLabel}>Subject</label>
-          <div style={styles.imageFrame}>
+      <div style={s.imageRow}>
+        <div style={s.imageSlot}>
+          <p style={s.imageLabel}>Subject</p>
+          <div style={s.imageFrame}>
             <Image src={job.image1_url} alt="Subject" fill style={{ objectFit: 'cover' }} sizes="120px" />
           </div>
         </div>
-        <div style={styles.arrowWrap}>
-          <span style={styles.arrow}>→</span>
+        <div style={s.arrowWrap}>
+          <span style={s.arrow}>→</span>
         </div>
-        <div style={styles.imageSlot}>
-          <label style={styles.imageLabel}>Reference</label>
-          <div style={styles.imageFrame}>
+        <div style={s.imageSlot}>
+          <p style={s.imageLabel}>Reference</p>
+          <div style={s.imageFrame}>
             <Image src={job.image2_url} alt="Reference" fill style={{ objectFit: 'cover' }} sizes="120px" />
           </div>
         </div>
       </div>
 
-      <div style={styles.resultWrap}>
+      <div style={s.resultWrap}>
         {job.status === 'done' && job.output_url ? (
           <>
-            <label style={styles.imageLabel}>Result</label>
-            <a href={`/history/${job.id}`} style={styles.resultLink}>
-              <div style={styles.resultFrame}>
+            <p style={s.imageLabel}>Result</p>
+            <a href={`/history/${job.id}`} style={s.resultLink}>
+              <div style={s.resultFrame}>
                 <Image
                   src={job.output_url} alt="Result" fill
                   style={{ objectFit: 'cover' }} sizes="(max-width: 768px) 90vw, 400px"
                 />
+                <div style={s.resultOverlay}>
+                  <span style={s.resultOverlayText}>View →</span>
+                </div>
               </div>
             </a>
             <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-              <a href={`/history/${job.id}`} className="btn btn-gold" style={{ fontSize: 10 }}>Open</a>
-              <a href={job.output_url} download target="_blank" rel="noopener noreferrer"
-                 className="btn btn-ghost" style={{ fontSize: 10 }}>Download</a>
+              <a href={`/history/${job.id}`} className="btn btn-gold" style={{ fontSize: 10, padding: '8px 18px' }}>
+                Open
+              </a>
+              <a
+                href={job.output_url} download target="_blank" rel="noopener noreferrer"
+                className="btn btn-ghost" style={{ fontSize: 10, padding: '8px 18px' }}
+              >
+                Download
+              </a>
             </div>
           </>
         ) : (
@@ -194,196 +219,319 @@ function PhotoCard({ job, index }: { job: Job; index: number }) {
         )}
       </div>
 
-      <CardFooter date={date} time={time} />
+      <CardFooter time={time} />
     </div>
   )
 }
 
-// ── Video card ────────────────────────────────────────────────────────────────
+// ── Video card ─────────────────────────────────────────────────────────────────
 
 function VideoCard({ job, index }: { job: VideoJob; index: number }) {
   const date = new Date(job.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
   const time = new Date(job.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
 
   return (
-    <div style={{ ...styles.card, animationDelay: `${index * 50}ms` }} className="animate-fade-up">
-      <div style={styles.cardTypeBadge}>
-        <span style={{ color: 'var(--teal)' }}>▶</span> Video
-        {job.showcase && (
-          <span style={{ color: 'var(--text-muted)', marginLeft: 8 }}>
-            {SHOWCASE_LABELS[job.showcase] ?? job.showcase}
+    <div
+      style={{ ...s.card, animationDelay: `${index * 40}ms` }}
+      className="animate-fade-up"
+    >
+      <div style={s.cardHeader}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span className="badge badge-default">
+            <span style={{ color: 'var(--teal)' }}>▶</span> Video
           </span>
-        )}
-        {job.duration && (
-          <span style={{ color: 'var(--text-muted)' }}> · {job.duration}s</span>
-        )}
+          {job.showcase && (
+            <span className="badge badge-default">
+              {SHOWCASE_LABELS[job.showcase] ?? job.showcase}
+            </span>
+          )}
+          {job.duration && (
+            <span className="badge badge-default">{job.duration}s</span>
+          )}
+        </div>
+        <span style={s.cardTime}>{date}</span>
       </div>
 
-      {/* Subject thumbnail */}
-      <div style={styles.videoThumbWrap}>
-        <div style={styles.videoThumb}>
+      <div style={s.videoThumbWrap}>
+        <div style={s.videoThumb}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src={job.output_url ?? job.subject_url}
-            alt="Subject"
+            src={job.output_url ?? job.subject_url} alt="Subject"
             style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
           />
           {job.status === 'done' && (
-            <div style={styles.playOverlay}>
-              <div style={styles.playIcon}>▶</div>
+            <div style={s.playOverlay}>
+              <div style={s.playBtn}>▶</div>
             </div>
           )}
         </div>
       </div>
 
-      {/* Video result */}
       {job.status === 'done' && job.video_url ? (
-        <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+        <div style={{ display: 'flex', gap: 8 }}>
           <a
             href={job.video_url} target="_blank" rel="noopener noreferrer"
-            className="btn btn-gold" style={{ fontSize: 10 }}
+            className="btn btn-gold" style={{ fontSize: 10, padding: '8px 18px' }}
           >
             Watch
           </a>
           <a
             href={job.video_url} download="food-showcase.mp4"
             target="_blank" rel="noopener noreferrer"
-            className="btn btn-ghost" style={{ fontSize: 10 }}
+            className="btn btn-ghost" style={{ fontSize: 10, padding: '8px 18px' }}
           >
             Download
           </a>
         </div>
       ) : (
-        <StatusBadge status={job.status} label={job.status === 'processing' ? 'Co.Media AI is rendering…' : undefined} />
+        <StatusBadge
+          status={job.status}
+          label={job.status === 'processing' ? 'Co.Media AI is rendering…' : undefined}
+        />
       )}
 
-      <CardFooter date={date} time={time} />
+      <CardFooter time={time} />
     </div>
   )
 }
 
-// ── Shared sub-components ─────────────────────────────────────────────────────
+// ── Shared sub-components ──────────────────────────────────────────────────────
 
 function StatusBadge({ status, label }: { status: string; label?: string }) {
+  if (status === 'processing') return (
+    <div style={s.statusBadge}>
+      <span style={s.statusDot} />
+      {label ?? 'Processing'}
+    </div>
+  )
+  if (status === 'failed') return (
+    <span className="badge badge-error">✕ Failed</span>
+  )
   return (
-    <div style={styles.statusBadge} data-status={status}>
-      {status === 'processing' && (
-        <><span style={styles.statusDot} />{label ?? 'Processing'}</>
-      )}
-      {status === 'failed'  && '✕ Failed'}
-      {status === 'pending' && '◌ Pending'}
+    <span className="badge badge-default">◌ Pending</span>
+  )
+}
+
+function CardFooter({ time }: { time: string }) {
+  return (
+    <div style={s.cardFooter}>
+      <span style={s.footerTime}>{time}</span>
     </div>
   )
 }
 
-function CardFooter({ date, time }: { date: string; time: string }) {
-  return (
-    <div style={styles.cardFooter}>
-      <span style={styles.cardDate}>{date}</span>
-      <span style={styles.cardTime}>{time}</span>
-    </div>
-  )
-}
+// ── Styles ─────────────────────────────────────────────────────────────────────
 
-// ── Styles ────────────────────────────────────────────────────────────────────
+const s: Record<string, React.CSSProperties> = {
+  page: {
+    minHeight: '100vh',
+    background: 'var(--bg)',
+  },
+  main: {
+    maxWidth: 1160, margin: '0 auto',
+    padding: '48px 24px 80px',
+  },
 
-const styles: Record<string, React.CSSProperties> = {
-  page: { minHeight: '100vh', background: 'var(--bg)', display: 'flex', flexDirection: 'column' },
-  header: {
-    borderBottom: '1px solid var(--border)', background: 'var(--header-bg)',
-    backdropFilter: 'blur(12px)', position: 'sticky', top: 0, zIndex: 100,
+  /* Page header */
+  pageHeader: {
+    display: 'flex', alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    marginBottom: 32, flexWrap: 'wrap', gap: 16,
   },
-  headerInner: {
-    maxWidth: 1100, margin: '0 auto', padding: '0 24px', height: 56,
-    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+  eyebrow: {
+    fontFamily: 'var(--font-mono)',
+    fontSize: 10, letterSpacing: '0.16em',
+    textTransform: 'uppercase',
+    color: 'var(--orange)',
+    marginBottom: 6,
   },
-  logo: { display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none', color: '#FFFFFF' },
-  logoIcon: { color: 'var(--orange)', fontSize: 18 },
-  logoText: { fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 700, letterSpacing: '-0.01em', color: '#FFFFFF' },
-  nav:         { display: 'flex', alignItems: 'center', gap: 16 },
-  navLink: {
-    color: 'rgba(255,255,255,0.55)', fontSize: 11, letterSpacing: '0.1em',
-    textTransform: 'uppercase', transition: 'color 0.15s', textDecoration: 'none',
+  title: {
+    fontFamily: 'var(--font-display)',
+    fontSize: 40, fontWeight: 800,
+    color: 'var(--text)',
+    letterSpacing: '-0.02em',
   },
-  navDivider: { color: 'rgba(255,255,255,0.2)' },
-  signOutBtn: {
-    background: 'none', border: 'none', color: 'rgba(255,255,255,0.55)', fontFamily: 'var(--font-mono)',
-    fontSize: 11, letterSpacing: '0.1em', textTransform: 'uppercase', cursor: 'pointer', padding: 0,
+  headerStats: {
+    display: 'flex', alignItems: 'center', gap: 10,
   },
-  main:       { maxWidth: 1100, margin: '0 auto', padding: '60px 24px 80px', width: '100%' },
-  pageHeader: { marginBottom: 32 },
-  pageTitle: {
-    fontFamily: 'var(--font-display)', fontSize: 42, fontWeight: 300,
-    color: 'var(--text)', letterSpacing: '0.02em', lineHeight: 1.1,
+  statPill: {
+    display: 'inline-flex', alignItems: 'center', gap: 7,
+    background: 'var(--card)', border: '1px solid var(--border)',
+    borderRadius: 100, padding: '5px 12px',
+    fontFamily: 'var(--font-mono)', fontSize: 11,
+    color: 'var(--text-secondary)',
+    boxShadow: 'var(--shadow-xs)',
   },
-  pageSubtitle: {
-    color: 'var(--text-muted)', fontSize: 12, letterSpacing: '0.08em',
-    textTransform: 'uppercase', marginTop: 8,
+  statDot: {
+    width: 6, height: 6, borderRadius: '50%',
+    display: 'inline-block', flexShrink: 0,
   },
-  filterRow: { display: 'flex', gap: 8, marginBottom: 32 },
+
+  /* Filters */
+  filterRow: {
+    display: 'flex', gap: 6, marginBottom: 28,
+  },
   filterBtn: {
-    padding: '6px 16px', border: '1px solid', borderRadius: 20,
-    fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.1em',
-    textTransform: 'uppercase', cursor: 'pointer', transition: 'all 0.15s',
+    display: 'inline-flex', alignItems: 'center', gap: 7,
+    padding: '7px 16px',
+    background: 'var(--card)', border: '1px solid var(--border)',
+    borderRadius: 100,
+    fontFamily: 'var(--font-mono)', fontSize: 11,
+    letterSpacing: '0.06em',
+    color: 'var(--text-muted)', cursor: 'pointer',
+    transition: 'all 0.15s',
+    boxShadow: 'var(--shadow-xs)',
   },
+  filterBtnActive: {
+    background: 'var(--orange)',
+    borderColor: 'var(--orange)',
+    color: '#FFFFFF',
+    boxShadow: '0 2px 8px var(--orange-glow)',
+  },
+  filterCount: {
+    background: 'var(--border)', color: 'var(--text-muted)',
+    fontSize: 9, fontWeight: 600,
+    padding: '2px 6px', borderRadius: 100, minWidth: 18,
+    textAlign: 'center' as const,
+  },
+  filterCountActive: {
+    background: 'rgba(255,255,255,0.25)', color: '#FFFFFF',
+  },
+
+  /* Empty state */
   empty: {
     display: 'flex', flexDirection: 'column', alignItems: 'center',
     padding: '80px 0', gap: 12, textAlign: 'center',
   },
-  emptyIcon: { color: 'var(--gold-dim)', fontSize: 36, opacity: 0.4 },
-  emptyText: { color: 'var(--text-muted)', fontSize: 13, letterSpacing: '0.06em' },
-  grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 24 },
+  emptyIconWrap: {
+    width: 72, height: 72, borderRadius: '50%',
+    background: 'var(--orange-glow)',
+    border: '1px solid rgba(242,56,1,0.15)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    marginBottom: 8,
+  },
+  emptyIcon: { color: 'var(--orange)', fontSize: 30 },
+  emptyTitle: {
+    fontFamily: 'var(--font-display)',
+    fontSize: 22, fontWeight: 700,
+    color: 'var(--text)',
+  },
+  emptyDesc: {
+    color: 'var(--text-muted)', fontSize: 13,
+    lineHeight: 1.6, maxWidth: 320,
+  },
+
+  /* Grid */
+  grid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+    gap: 20,
+  },
+
+  /* Card */
   card: {
-    background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 6, padding: 20,
-    display: 'flex', flexDirection: 'column', gap: 16, transition: 'border-color 0.2s',
+    background: 'var(--card)',
+    border: '1px solid var(--border)',
+    borderRadius: 'var(--radius-lg)',
+    padding: 20,
+    display: 'flex', flexDirection: 'column', gap: 16,
+    boxShadow: 'var(--shadow-sm)',
+    transition: 'box-shadow 0.2s, border-color 0.2s',
   },
-  cardTypeBadge: {
-    fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.1em',
+  cardHeader: {
+    display: 'flex', alignItems: 'center',
+    justifyContent: 'space-between', gap: 8,
+  },
+  cardTime: {
+    fontFamily: 'var(--font-mono)', fontSize: 10,
+    color: 'var(--text-muted)', letterSpacing: '0.04em',
+  },
+
+  /* Image slots */
+  imageRow:  { display: 'flex', alignItems: 'flex-end', gap: 10 },
+  imageSlot: { flex: 1, display: 'flex', flexDirection: 'column', gap: 5 },
+  imageLabel: {
+    fontFamily: 'var(--font-mono)',
+    fontSize: 9, letterSpacing: '0.14em',
     textTransform: 'uppercase', color: 'var(--text-muted)',
-    display: 'flex', alignItems: 'center', gap: 6,
   },
-  imageRow:   { display: 'flex', alignItems: 'flex-end', gap: 12 },
-  imageSlot:  { flex: 1, display: 'flex', flexDirection: 'column', gap: 6 },
-  imageLabel: { color: 'var(--text-muted)', fontSize: 9, letterSpacing: '0.14em', textTransform: 'uppercase' },
   imageFrame: {
     position: 'relative', width: '100%', paddingBottom: '75%',
-    background: 'var(--surface)', borderRadius: 3, overflow: 'hidden', border: '1px solid var(--border)',
+    background: 'var(--surface)', borderRadius: 'var(--radius)',
+    overflow: 'hidden', border: '1px solid var(--border)',
   },
-  arrowWrap:  { paddingBottom: '37.5%', display: 'flex', alignItems: 'flex-end', justifyContent: 'center' },
-  arrow:      { color: 'var(--gold-dim)', fontSize: 16, marginBottom: 16 },
+  arrowWrap: {
+    paddingBottom: '37.5%', display: 'flex',
+    alignItems: 'flex-end', justifyContent: 'center',
+  },
+  arrow: { color: 'var(--text-muted)', fontSize: 14, marginBottom: 14 },
+
+  /* Result */
   resultWrap: { display: 'flex', flexDirection: 'column', gap: 6 },
-  resultLink: { display: 'block', textDecoration: 'none' },
+  resultLink: { display: 'block', textDecoration: 'none', borderRadius: 'var(--radius)' },
   resultFrame: {
     position: 'relative', width: '100%', paddingBottom: '56.25%',
-    background: 'var(--surface)', borderRadius: 3, overflow: 'hidden', border: '1px solid var(--border)',
+    background: 'var(--surface)', borderRadius: 'var(--radius)',
+    overflow: 'hidden', border: '1px solid var(--border)',
   },
-  videoThumbWrap: { position: 'relative' },
+  resultOverlay: {
+    position: 'absolute', inset: 0,
+    background: 'transparent',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    transition: 'background 0.2s',
+    opacity: 0,
+  },
+  resultOverlayText: {
+    color: '#fff', fontFamily: 'var(--font-mono)',
+    fontSize: 12, letterSpacing: '0.08em',
+    background: 'rgba(0,0,0,0.5)',
+    padding: '6px 14px', borderRadius: 20,
+  },
+
+  /* Video thumb */
+  videoThumbWrap: {},
   videoThumb: {
     position: 'relative', width: '100%', paddingBottom: '56.25%',
-    background: 'var(--surface)', borderRadius: 3, overflow: 'hidden', border: '1px solid var(--border)',
+    background: 'var(--surface)', borderRadius: 'var(--radius)',
+    overflow: 'hidden', border: '1px solid var(--border)',
   },
   playOverlay: {
-    position: 'absolute', inset: 0, display: 'flex', alignItems: 'center',
-    justifyContent: 'center', background: 'rgba(0,0,0,0.3)',
+    position: 'absolute', inset: 0,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    background: 'rgba(0,0,0,0.25)',
   },
-  playIcon: {
-    width: 40, height: 40, borderRadius: '50%',
-    background: 'rgba(110,201,180,0.9)', display: 'flex', alignItems: 'center',
-    justifyContent: 'center', color: '#0A0807', fontSize: 14, paddingLeft: 2,
+  playBtn: {
+    width: 44, height: 44, borderRadius: '50%',
+    background: 'rgba(255,255,255,0.92)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    color: '#0F1117', fontSize: 14, paddingLeft: 2,
+    boxShadow: '0 4px 16px rgba(0,0,0,0.2)',
   },
+
+  /* Status */
   statusBadge: {
-    display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px',
-    background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 3,
-    color: 'var(--text-muted)', fontSize: 11, letterSpacing: '0.08em',
+    display: 'inline-flex', alignItems: 'center', gap: 8,
+    padding: '8px 14px',
+    background: 'var(--card-hover)', border: '1px solid var(--border)',
+    borderRadius: 'var(--radius)',
+    color: 'var(--text-muted)', fontSize: 11,
+    fontFamily: 'var(--font-mono)', letterSpacing: '0.06em',
   },
   statusDot: {
-    width: 6, height: 6, borderRadius: '50%', background: 'var(--gold)',
-    animation: 'pulse-gold 1.5s ease-in-out infinite', display: 'inline-block',
+    width: 7, height: 7, borderRadius: '50%',
+    background: 'var(--orange)',
+    animation: 'pulse-gold 1.5s ease-in-out infinite',
+    display: 'inline-block', flexShrink: 0,
   },
+
+  /* Footer */
   cardFooter: {
-    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    display: 'flex', justifyContent: 'flex-end',
     paddingTop: 8, borderTop: '1px solid var(--border)',
   },
-  cardDate: { color: 'var(--text-muted)', fontSize: 10, letterSpacing: '0.08em' },
-  cardTime: { color: 'var(--text-muted)', fontSize: 10, letterSpacing: '0.06em' },
+  footerTime: {
+    fontFamily: 'var(--font-mono)',
+    fontSize: 10, color: 'var(--text-muted)',
+    letterSpacing: '0.04em',
+  },
 }
