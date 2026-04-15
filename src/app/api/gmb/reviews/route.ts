@@ -34,29 +34,38 @@ export async function GET(request: NextRequest) {
   try {
     const token = await getValidAccessToken(user.id)
 
-    // Try new Reviews API first, fall back to v4
-    const urlsToTry = [
-      `https://mybusinessreviews.googleapis.com/v1/accounts/${accountId}/locations/${locationId}/reviews?pageSize=50`,
-      `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/reviews?pageSize=50`,
-    ]
+    // Fetch all pages of reviews
+    const allReviews: GmbReview[] = []
+    let pageToken: string | undefined
 
-    let data: { reviews?: GmbReview[] } | null = null
-    const allErrors: string[] = []
+    do {
+      const qs = `pageSize=50${pageToken ? `&pageToken=${pageToken}` : ''}`
+      const urlsToTry = [
+        `https://mybusinessreviews.googleapis.com/v1/accounts/${accountId}/locations/${locationId}/reviews?${qs}`,
+        `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/reviews?${qs}`,
+      ]
 
-    for (const url of urlsToTry) {
-      try {
-        data = await gmbFetch(token, url) as { reviews?: GmbReview[] }
-        break
-      } catch (e) {
-        allErrors.push(`${url} → ${e instanceof Error ? e.message : String(e)}`)
+      let data: { reviews?: GmbReview[]; nextPageToken?: string } | null = null
+      const allErrors: string[] = []
+
+      for (const url of urlsToTry) {
+        try {
+          data = await gmbFetch(token, url) as { reviews?: GmbReview[]; nextPageToken?: string }
+          break
+        } catch (e) {
+          allErrors.push(`${url} → ${e instanceof Error ? e.message : String(e)}`)
+        }
       }
-    }
 
-    if (!data) {
-      throw new Error(`All review endpoints failed for ${locationName}.\n${allErrors.join('\n')}`)
-    }
+      if (!data) {
+        throw new Error(`All review endpoints failed for ${locationName}.\n${allErrors.join('\n')}`)
+      }
 
-    const reviews = data.reviews ?? []
+      allReviews.push(...(data.reviews ?? []))
+      pageToken = data.nextPageToken
+    } while (pageToken)
+
+    const reviews = allReviews
 
     const admin = createAdminClient()
     if (reviews.length > 0) {
