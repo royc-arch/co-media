@@ -28,14 +28,14 @@ interface Review {
 type Tone   = 'professional' | 'friendly' | 'casual'
 type Length = 'recommended' | 'condense' | 'medium' | 'detailed'
 
-// Multi-round suggest state per review
-type SuggestPhase = 'setup' | 'r1loading' | 'r1' | 'r2loading' | 'r2' | 'editing'
-interface SuggestState {
-  phase:      SuggestPhase
-  r1Replies:  string[]
-  r1Pick:     string | null
-  r2Replies:  string[]
-  insight:    string
+// Two-round AI Style trainer state
+type TrainPhase = 'setup' | 'r1loading' | 'r1' | 'r2loading' | 'r2' | 'done'
+interface TrainState {
+  phase:     TrainPhase
+  r1Replies: string[]
+  r1Pick:    string | null
+  r2Replies: string[]
+  insight:   string
 }
 
 const LENGTH_LABELS: Record<Length, string> = {
@@ -45,7 +45,9 @@ const LENGTH_LABELS: Record<Length, string> = {
   detailed:    'Detailed · ~750',
 }
 
+const STAR_LABELS = ['1 star', '2 stars', '3 stars', '4 stars', '5 stars']
 const STAR_MAP: Record<string, number> = { ONE:1, TWO:2, THREE:3, FOUR:4, FIVE:5 }
+const NUM_TO_STAR: Record<number, string> = { 1:'ONE', 2:'TWO', 3:'THREE', 4:'FOUR', 5:'FIVE' }
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
@@ -88,30 +90,26 @@ export default function GmbDashboardPage() {
   const [sendingReply,   setSendingReply]   = useState<string | null>(null)
   const [error,          setError]          = useState('')
 
-  // AI suggest — per review state
-  const [suggestStates, setSuggestStates] = useState<Record<string, SuggestState>>({})
-  const [keywords,      setKeywords]      = useState<Record<string, string>>({})
-  const [replyLength,   setReplyLength]   = useState<Record<string, Length>>({})
+  // AI Style trainer
+  const [showTrainer,   setShowTrainer]   = useState(false)
+  const [trainState,    setTrainState]    = useState<TrainState>({ phase: 'setup', r1Replies: [], r1Pick: null, r2Replies: [], insight: '' })
+  const [sampleReview,  setSampleReview]  = useState('')
+  const [sampleStars,   setSampleStars]   = useState(5)
+  const [trainKeywords, setTrainKeywords] = useState('')
+  const [trainLength,   setTrainLength]   = useState<Length>('recommended')
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
-  function patchSuggest(reviewName: string, patch: Partial<SuggestState>) {
-    setSuggestStates(prev => ({
-      ...prev,
-      [reviewName]: {
-        phase: 'setup', r1Replies: [], r1Pick: null, r2Replies: [], insight: '',
-        ...(prev[reviewName] ?? {}),
-        ...patch,
-      },
-    }))
+  function patchTrain(patch: Partial<TrainState>) {
+    setTrainState(prev => ({ ...prev, ...patch }))
   }
 
-  function closeSuggest(reviewName: string) {
-    setSuggestStates(prev => { const n = { ...prev }; delete n[reviewName]; return n })
-  }
-
-  function kwList(reviewName: string): string[] {
-    return (keywords[reviewName] ?? '').split(',').map(k => k.trim()).filter(Boolean)
+  function resetTrainer() {
+    setTrainState({ phase: 'setup', r1Replies: [], r1Pick: null, r2Replies: [], insight: '' })
+    setSampleReview('')
+    setSampleStars(5)
+    setTrainKeywords('')
+    setTrainLength('recommended')
   }
 
   // ── Load locations ─────────────────────────────────────────────────────────
@@ -136,7 +134,8 @@ export default function GmbDashboardPage() {
 
     setLoadingRevs(true)
     setReviews([])
-    setSuggestStates({})
+    setShowTrainer(false)
+    resetTrainer()
     fetch(`/api/gmb/reviews?locationName=${encodeURIComponent(activeLoc)}`)
       .then(r => r.json())
       .then(d => {
@@ -187,7 +186,6 @@ export default function GmbDashboardPage() {
         r.name === reviewName ? { ...r, reviewReply: { comment } } : r
       ))
       setReplyingTo(null)
-      closeSuggest(reviewName)
       setReplyTexts(prev => { const n = { ...prev }; delete n[reviewName]; return n })
     } else {
       setError('Failed to post reply.')
@@ -195,121 +193,119 @@ export default function GmbDashboardPage() {
     setSendingReply(null)
   }
 
-  // ── AI Suggest: Round 1 generate / refresh ─────────────────────────────────
+  // ── AI Style Trainer: Round 1 ──────────────────────────────────────────────
 
-  async function generateR1(review: Review) {
-    patchSuggest(review.name, { phase: 'r1loading', r1Replies: [], r1Pick: null, r2Replies: [] })
+  async function trainGenerateR1() {
+    if (!sampleReview.trim()) return
+    patchTrain({ phase: 'r1loading', r1Replies: [], r1Pick: null, r2Replies: [] })
+    const kws = trainKeywords.split(',').map(k => k.trim()).filter(Boolean)
     try {
       const res = await fetch('/api/gmb/suggest-reply', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          reviewText:         review.comment ?? '',
-          reviewAuthor:       review.reviewer?.displayName ?? 'Guest',
-          starRating:         review.starRating,
-          keywords:           kwList(review.name),
-          length:             replyLength[review.name] ?? 'recommended',
+          reviewText:         sampleReview,
+          reviewAuthor:       'Sample Customer',
+          starRating:         NUM_TO_STAR[sampleStars],
+          keywords:           kws,
+          length:             trainLength,
           customInstructions: settings?.custom_instructions ?? '',
           promptHints:        settings?.prompt_hints ?? '',
         }),
       })
       const d = await res.json() as { replies?: string[]; error?: string }
       if (d.replies?.length) {
-        patchSuggest(review.name, { phase: 'r1', r1Replies: d.replies })
+        patchTrain({ phase: 'r1', r1Replies: d.replies })
       } else {
-        setError(`AI generate failed: ${d.error ?? 'unknown'}`)
-        patchSuggest(review.name, { phase: 'setup' })
+        setError(`Generate failed: ${d.error ?? 'unknown'}`)
+        patchTrain({ phase: 'setup' })
       }
     } catch {
-      setError('AI generate failed.')
-      patchSuggest(review.name, { phase: 'setup' })
+      setError('Generate failed.')
+      patchTrain({ phase: 'setup' })
     }
   }
 
-  // ── AI Suggest: user picks from Round 1 → trigger Round 2 ─────────────────
+  // ── AI Style Trainer: pick Round 1 → Round 2 ──────────────────────────────
 
-  async function pickR1(review: Review, picked: string) {
-    patchSuggest(review.name, { phase: 'r2loading', r1Pick: picked, r2Replies: [] })
+  async function trainPickR1(picked: string) {
+    patchTrain({ phase: 'r2loading', r1Pick: picked, r2Replies: [] })
+    const kws = trainKeywords.split(',').map(k => k.trim()).filter(Boolean)
     try {
       const res = await fetch('/api/gmb/suggest-reply/refine', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           selectedReply:      picked,
-          reviewText:         review.comment ?? '',
-          reviewAuthor:       review.reviewer?.displayName ?? 'Guest',
-          starRating:         review.starRating,
-          keywords:           kwList(review.name),
-          length:             replyLength[review.name] ?? 'recommended',
+          reviewText:         sampleReview,
+          reviewAuthor:       'Sample Customer',
+          starRating:         NUM_TO_STAR[sampleStars],
+          keywords:           kws,
+          length:             trainLength,
           customInstructions: settings?.custom_instructions ?? '',
           promptHints:        settings?.prompt_hints ?? '',
         }),
       })
       const d = await res.json() as { replies?: string[]; insight?: string; error?: string }
       if (d.replies?.length) {
-        patchSuggest(review.name, { phase: 'r2', r2Replies: d.replies, insight: d.insight ?? '' })
+        patchTrain({ phase: 'r2', r2Replies: d.replies, insight: d.insight ?? '' })
       } else {
-        setError(`AI refine failed: ${d.error ?? 'unknown'}`)
-        patchSuggest(review.name, { phase: 'r1' })
+        setError(`Refine failed: ${d.error ?? 'unknown'}`)
+        patchTrain({ phase: 'r1' })
       }
     } catch {
-      setError('AI refine failed.')
-      patchSuggest(review.name, { phase: 'r1' })
+      patchTrain({ phase: 'r1' })
     }
   }
 
-  // ── AI Suggest: refresh Round 2 (same r1Pick, new variations) ─────────────
+  // ── AI Style Trainer: refresh Round 2 ─────────────────────────────────────
 
-  async function refreshR2(review: Review) {
-    const r1Pick = suggestStates[review.name]?.r1Pick
-    if (!r1Pick) return
-    patchSuggest(review.name, { phase: 'r2loading', r2Replies: [] })
+  async function trainRefreshR2() {
+    if (!trainState.r1Pick) return
+    patchTrain({ phase: 'r2loading', r2Replies: [] })
+    const kws = trainKeywords.split(',').map(k => k.trim()).filter(Boolean)
     try {
       const res = await fetch('/api/gmb/suggest-reply/refine', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          selectedReply:      r1Pick,
-          reviewText:         review.comment ?? '',
-          reviewAuthor:       review.reviewer?.displayName ?? 'Guest',
-          starRating:         review.starRating,
-          keywords:           kwList(review.name),
-          length:             replyLength[review.name] ?? 'recommended',
+          selectedReply:      trainState.r1Pick,
+          reviewText:         sampleReview,
+          reviewAuthor:       'Sample Customer',
+          starRating:         NUM_TO_STAR[sampleStars],
+          keywords:           kws,
+          length:             trainLength,
           customInstructions: settings?.custom_instructions ?? '',
           promptHints:        settings?.prompt_hints ?? '',
         }),
       })
       const d = await res.json() as { replies?: string[]; insight?: string; error?: string }
       if (d.replies?.length) {
-        patchSuggest(review.name, { phase: 'r2', r2Replies: d.replies, insight: d.insight ?? '' })
+        patchTrain({ phase: 'r2', r2Replies: d.replies, insight: d.insight ?? '' })
       } else {
-        setError(`AI refine failed: ${d.error ?? 'unknown'}`)
-        patchSuggest(review.name, { phase: 'r2' })
+        patchTrain({ phase: 'r2' })
       }
     } catch {
-      patchSuggest(review.name, { phase: 'r2' })
+      patchTrain({ phase: 'r2' })
     }
   }
 
-  // ── AI Suggest: user picks from Round 2 → fill editor + learn ─────────────
+  // ── AI Style Trainer: pick Round 2 → learn + save ─────────────────────────
 
-  async function pickR2(review: Review, picked: string) {
-    const r1Pick = suggestStates[review.name]?.r1Pick ?? ''
-    setReplyTexts(prev => ({ ...prev, [review.name]: picked }))
-    setReplyingTo(review.name)
-    patchSuggest(review.name, { phase: 'editing', r2Replies: [] })
-
-    // Learn in background — non-blocking
-    fetch('/api/gmb/suggest-reply/learn', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        r1Pick,
-        r2Pick:       picked,
-        reviewText:   review.comment ?? '',
-        locationName: activeLoc,
-      }),
-    }).then(r => r.json()).then(d => {
+  async function trainPickR2(picked: string) {
+    patchTrain({ phase: 'done' })
+    try {
+      const res = await fetch('/api/gmb/suggest-reply/learn', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          r1Pick:       trainState.r1Pick ?? '',
+          r2Pick:       picked,
+          reviewText:   sampleReview,
+          locationName: activeLoc,
+        }),
+      })
+      const d = await res.json() as { hints?: string }
       if (d.hints && settings) {
         const updated = { ...settings, prompt_hints: d.hints }
         setSettings(updated)
@@ -317,7 +313,7 @@ export default function GmbDashboardPage() {
           l.location_name === activeLoc ? updated : l
         ))
       }
-    }).catch(() => {/* non-fatal */})
+    } catch { /* non-fatal */ }
   }
 
   const unreplied = reviews.filter(r => !r.reviewReply).length
@@ -407,26 +403,38 @@ export default function GmbDashboardPage() {
                 rows={3}
               />
 
+              {/* Learned style indicator */}
               {settings.prompt_hints && (
-                <>
-                  <p style={s.settingLabel}>Learned Style <span style={{ color: 'var(--success)', marginLeft: 4 }}>●</span></p>
-                  <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.6 }}>
-                    {settings.prompt_hints}
-                  </p>
-                  <button
-                    onClick={() => setSettings(p => p ? { ...p, prompt_hints: null } : p)}
-                    style={{ marginTop: 6, fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
-                  >
-                    Clear learned style
-                  </button>
-                </>
+                <div style={s.learnedBox}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <span style={{ ...s.settingLabel, margin: 0 }}>
+                      Learned Style <span style={{ color: 'var(--success)' }}>●</span>
+                    </span>
+                    <button
+                      onClick={() => setSettings(p => p ? { ...p, prompt_hints: null } : p)}
+                      style={s.clearBtn}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  <p style={s.learnedText}>{settings.prompt_hints}</p>
+                </div>
               )}
+
+              {/* Train style button */}
+              <button
+                onClick={() => { setShowTrainer(t => !t); resetTrainer() }}
+                className="btn btn-ghost"
+                style={{ width: '100%', marginTop: 12, fontSize: 10, color: 'var(--orange)', borderColor: 'var(--orange)' }}
+              >
+                {showTrainer ? 'Close Style Trainer' : 'Train AI Style'}
+              </button>
 
               <button
                 onClick={saveSettings}
                 disabled={savingSettings}
                 className="btn btn-gold"
-                style={{ width: '100%', marginTop: 14 }}
+                style={{ width: '100%', marginTop: 8 }}
               >
                 {savingSettings ? 'Saving…' : 'Save Settings'}
               </button>
@@ -437,6 +445,171 @@ export default function GmbDashboardPage() {
         {/* ── Main content ──────────────────────────────────────────────────── */}
         <main style={s.main}>
           {error && <div style={s.errorBanner}>⚠ {error}</div>}
+
+          {/* ── AI Style Trainer panel ─────────────────────────────────────── */}
+          {showTrainer && (
+            <div style={s.trainerCard}>
+              <div style={s.trainerHeader}>
+                <div>
+                  <p style={s.trainerEyebrow}>Auto-reply</p>
+                  <h2 style={s.trainerTitle}>Train AI Reply Style</h2>
+                  <p style={s.trainerDesc}>
+                    Enter a sample review, generate 5 reply options, pick the one that feels right,
+                    then refine — the system learns your preferred style for all future auto-replies.
+                  </p>
+                </div>
+              </div>
+
+              {/* Setup */}
+              {trainState.phase === 'setup' && (
+                <div style={s.trainerBody}>
+                  <p style={s.fieldLabel}>Sample review text</p>
+                  <textarea
+                    placeholder="Paste a real customer review or write a sample one…"
+                    value={sampleReview}
+                    onChange={e => setSampleReview(e.target.value)}
+                    style={{ ...s.textarea, marginBottom: 12 }}
+                    rows={3}
+                  />
+
+                  <p style={s.fieldLabel}>Star rating</p>
+                  <div style={s.starRow}>
+                    {[1,2,3,4,5].map(n => (
+                      <button
+                        key={n}
+                        onClick={() => setSampleStars(n)}
+                        style={{ ...s.starBtn, color: n <= sampleStars ? '#f59e0b' : 'var(--border)' }}
+                      >
+                        ★
+                      </button>
+                    ))}
+                    <span style={s.starLabel}>{STAR_LABELS[sampleStars - 1]}</span>
+                  </div>
+
+                  <p style={s.fieldLabel} style={{ marginTop: 12 }}>Keywords to embed <span style={{ opacity: 0.5, fontWeight: 400 }}>(optional, comma-separated)</span></p>
+                  <input
+                    placeholder="e.g. all-you-can-eat, sushi, great value"
+                    value={trainKeywords}
+                    onChange={e => setTrainKeywords(e.target.value)}
+                    style={{ fontSize: 12, marginBottom: 12 }}
+                  />
+
+                  <p style={s.fieldLabel}>Reply length</p>
+                  <div style={s.lengthGroup}>
+                    {(Object.keys(LENGTH_LABELS) as Length[]).map(len => (
+                      <button
+                        key={len}
+                        onClick={() => setTrainLength(len)}
+                        style={{ ...s.lengthBtn, ...(trainLength === len ? s.lengthBtnActive : {}) }}
+                      >
+                        {LENGTH_LABELS[len]}
+                      </button>
+                    ))}
+                  </div>
+
+                  <button
+                    onClick={trainGenerateR1}
+                    disabled={!sampleReview.trim()}
+                    className="btn btn-gold"
+                    style={{ marginTop: 16 }}
+                  >
+                    Generate 5 options
+                  </button>
+                </div>
+              )}
+
+              {/* Loading */}
+              {(trainState.phase === 'r1loading' || trainState.phase === 'r2loading') && (
+                <div style={s.loadingPanel}>
+                  <div style={s.spinner} />
+                  <span style={s.loadingText}>
+                    {trainState.phase === 'r1loading' ? 'Generating 5 variations…' : 'Refining based on your pick…'}
+                  </span>
+                </div>
+              )}
+
+              {/* Round 1 */}
+              {trainState.phase === 'r1' && (
+                <div style={s.trainerBody}>
+                  <p style={s.roundLabel}>Round 1 — Pick the reply that feels most like you</p>
+                  <div style={s.replyCards}>
+                    {trainState.r1Replies.map((reply, i) => (
+                      <div key={i} style={s.replyCard}>
+                        <div style={s.replyCardNum}>{i + 1}</div>
+                        <p style={s.replyCardText}>{reply}</p>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
+                          <span style={s.charHint}>{reply.length} chars</span>
+                          <button onClick={() => trainPickR1(reply)} className="btn btn-gold" style={{ fontSize: 10, padding: '5px 14px' }}>
+                            Choose this
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ marginTop: 14, display: 'flex', gap: 10 }}>
+                    <button onClick={() => patchTrain({ phase: 'setup' })} className="btn btn-ghost" style={{ fontSize: 11 }}>
+                      Back to setup
+                    </button>
+                    <button onClick={trainGenerateR1} className="btn btn-ghost" style={{ fontSize: 11 }}>
+                      None of these — Refresh
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Round 2 */}
+              {trainState.phase === 'r2' && (
+                <div style={s.trainerBody}>
+                  <p style={s.roundLabel}>Round 2 — Pick the best refined version</p>
+                  {trainState.insight && (
+                    <p style={s.insightText}>
+                      <span style={{ color: 'var(--orange)', marginRight: 4 }}>●</span>
+                      {trainState.insight}
+                    </p>
+                  )}
+                  <div style={s.replyCards}>
+                    {trainState.r2Replies.map((reply, i) => (
+                      <div key={i} style={s.replyCard}>
+                        <div style={s.replyCardNum}>{i + 1}</div>
+                        <p style={s.replyCardText}>{reply}</p>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
+                          <span style={s.charHint}>{reply.length} chars</span>
+                          <button onClick={() => trainPickR2(reply)} className="btn btn-gold" style={{ fontSize: 10, padding: '5px 14px' }}>
+                            Choose this
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ marginTop: 14, display: 'flex', gap: 10 }}>
+                    <button onClick={() => patchTrain({ phase: 'r1' })} className="btn btn-ghost" style={{ fontSize: 11 }}>
+                      Back to Round 1
+                    </button>
+                    <button onClick={trainRefreshR2} className="btn btn-ghost" style={{ fontSize: 11 }}>
+                      None of these — Refresh
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Done */}
+              {trainState.phase === 'done' && (
+                <div style={s.donePanel}>
+                  <span style={{ color: 'var(--success)', fontSize: 20 }}>✓</span>
+                  <div>
+                    <p style={{ fontFamily: 'var(--font-display)', fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Style saved</p>
+                    <p style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                      Your learned style has been saved. All future auto-replies for this location will follow it.
+                      Click <strong>Save Settings</strong> in the sidebar to confirm.
+                    </p>
+                  </div>
+                  <button onClick={resetTrainer} className="btn btn-ghost" style={{ fontSize: 11, marginTop: 8 }}>
+                    Train again
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Stats */}
           {reviews.length > 0 && (
@@ -470,7 +643,6 @@ export default function GmbDashboardPage() {
           ) : (
             <div style={s.reviewsList}>
               {reviews.map(review => {
-                const ss        = suggestStates[review.name]
                 const isReplying = replyingTo === review.name
                 const isSending  = sendingReply === review.name
 
@@ -507,181 +679,19 @@ export default function GmbDashboardPage() {
                       </div>
                     )}
 
-                    {/* ── Reply area (only for unreplied) ────────────────── */}
+                    {/* Manual reply (unreplied only) */}
                     {!review.reviewReply && (
                       <div style={s.replySection}>
-
-                        {/* Default action buttons */}
-                        {!ss && !isReplying && (
-                          <div style={{ display: 'flex', gap: 8 }}>
-                            <button
-                              onClick={() => setReplyingTo(review.name)}
-                              className="btn btn-ghost"
-                              style={{ fontSize: 11, padding: '7px 16px' }}
-                            >
-                              Write Reply
-                            </button>
-                            <button
-                              onClick={() => patchSuggest(review.name, { phase: 'setup' })}
-                              className="btn btn-ghost"
-                              style={{ fontSize: 11, padding: '7px 16px', color: 'var(--orange)', borderColor: 'var(--orange)' }}
-                            >
-                              AI Suggest
-                            </button>
-                          </div>
-                        )}
-
-                        {/* ── AI Suggest panel ─────────────────────────── */}
-                        {ss && (
-                          <div style={s.suggestWrap}>
-
-                            {/* Setup phase */}
-                            {ss.phase === 'setup' && (
-                              <div style={s.suggestPanel}>
-                                <div style={s.suggestPanelHeader}>
-                                  <span style={s.suggestTitle}>AI Suggest</span>
-                                  <button onClick={() => closeSuggest(review.name)} style={s.closeBtn}>✕</button>
-                                </div>
-
-                                <p style={s.suggestLabel}>Keywords <span style={{ opacity: 0.5, textTransform: 'none', letterSpacing: 0 }}>(optional, comma-separated)</span></p>
-                                <input
-                                  placeholder="e.g. all-you-can-eat, sushi, value"
-                                  value={keywords[review.name] ?? ''}
-                                  onChange={e => setKeywords(p => ({ ...p, [review.name]: e.target.value }))}
-                                  style={{ fontSize: 12, marginBottom: 12 }}
-                                />
-
-                                <p style={s.suggestLabel}>Reply length</p>
-                                <div style={s.lengthGroup}>
-                                  {(Object.keys(LENGTH_LABELS) as Length[]).map(len => (
-                                    <button
-                                      key={len}
-                                      onClick={() => setReplyLength(p => ({ ...p, [review.name]: len }))}
-                                      style={{ ...s.lengthBtn, ...((replyLength[review.name] ?? 'recommended') === len ? s.lengthBtnActive : {}) }}
-                                    >
-                                      {LENGTH_LABELS[len]}
-                                    </button>
-                                  ))}
-                                </div>
-
-                                <button
-                                  onClick={() => generateR1(review)}
-                                  className="btn btn-gold"
-                                  style={{ marginTop: 14, fontSize: 11, padding: '8px 22px' }}
-                                >
-                                  Generate 5 options
-                                </button>
-                              </div>
-                            )}
-
-                            {/* Round 1 loading */}
-                            {ss.phase === 'r1loading' && (
-                              <div style={s.loadingPanel}>
-                                <div style={s.spinner} />
-                                <span style={s.loadingText}>Generating 5 variations…</span>
-                              </div>
-                            )}
-
-                            {/* Round 1 select */}
-                            {ss.phase === 'r1' && (
-                              <div style={s.suggestPanel}>
-                                <div style={s.suggestPanelHeader}>
-                                  <span style={s.suggestTitle}>Round 1 — Pick the best match</span>
-                                  <button onClick={() => closeSuggest(review.name)} style={s.closeBtn}>✕</button>
-                                </div>
-                                <div style={s.replyCards}>
-                                  {ss.r1Replies.map((reply, i) => (
-                                    <div key={i} style={s.replyCard}>
-                                      <div style={s.replyCardNum}>{i + 1}</div>
-                                      <p style={s.replyCardText}>{reply}</p>
-                                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
-                                        <span style={s.charHint}>{reply.length} chars</span>
-                                        <button
-                                          onClick={() => pickR1(review, reply)}
-                                          className="btn btn-gold"
-                                          style={{ fontSize: 10, padding: '5px 14px' }}
-                                        >
-                                          Choose this
-                                        </button>
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-                                <div style={{ marginTop: 12, display: 'flex', justifyContent: 'center' }}>
-                                  <button
-                                    onClick={() => generateR1(review)}
-                                    className="btn btn-ghost"
-                                    style={{ fontSize: 11, padding: '7px 18px' }}
-                                  >
-                                    None of these — Refresh
-                                  </button>
-                                </div>
-                              </div>
-                            )}
-
-                            {/* Round 2 loading */}
-                            {ss.phase === 'r2loading' && (
-                              <div style={s.loadingPanel}>
-                                <div style={s.spinner} />
-                                <span style={s.loadingText}>Refining based on your pick…</span>
-                              </div>
-                            )}
-
-                            {/* Round 2 select */}
-                            {ss.phase === 'r2' && (
-                              <div style={s.suggestPanel}>
-                                <div style={s.suggestPanelHeader}>
-                                  <span style={s.suggestTitle}>Round 2 — Pick the best refined version</span>
-                                  <button onClick={() => closeSuggest(review.name)} style={s.closeBtn}>✕</button>
-                                </div>
-                                {ss.insight && (
-                                  <p style={s.insightText}>
-                                    <span style={{ color: 'var(--orange)', marginRight: 4 }}>●</span>
-                                    {ss.insight}
-                                  </p>
-                                )}
-                                <div style={s.replyCards}>
-                                  {ss.r2Replies.map((reply, i) => (
-                                    <div key={i} style={s.replyCard}>
-                                      <div style={s.replyCardNum}>{i + 1}</div>
-                                      <p style={s.replyCardText}>{reply}</p>
-                                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
-                                        <span style={s.charHint}>{reply.length} chars</span>
-                                        <button
-                                          onClick={() => pickR2(review, reply)}
-                                          className="btn btn-gold"
-                                          style={{ fontSize: 10, padding: '5px 14px' }}
-                                        >
-                                          Choose this
-                                        </button>
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-                                <div style={{ marginTop: 12, display: 'flex', justifyContent: 'center', gap: 10 }}>
-                                  <button
-                                    onClick={() => patchSuggest(review.name, { phase: 'r1' })}
-                                    className="btn btn-ghost"
-                                    style={{ fontSize: 11, padding: '7px 18px' }}
-                                  >
-                                    Back to Round 1
-                                  </button>
-                                  <button
-                                    onClick={() => refreshR2(review)}
-                                    className="btn btn-ghost"
-                                    style={{ fontSize: 11, padding: '7px 18px' }}
-                                  >
-                                    None of these — Refresh
-                                  </button>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        )}
-
-                        {/* Manual / AI-populated reply editor */}
-                        {isReplying && (
-                          <div style={s.replyInputWrap}>
+                        {!isReplying ? (
+                          <button
+                            onClick={() => setReplyingTo(review.name)}
+                            className="btn btn-ghost"
+                            style={{ fontSize: 11, padding: '7px 16px' }}
+                          >
+                            Write Reply
+                          </button>
+                        ) : (
+                          <div>
                             <textarea
                               autoFocus
                               placeholder="Write your reply…"
@@ -693,21 +703,11 @@ export default function GmbDashboardPage() {
                             <p style={s.charCount}>{(replyTexts[review.name] ?? '').length} characters</p>
                             <div style={s.replyActions}>
                               <button
-                                onClick={() => { setReplyingTo(null); closeSuggest(review.name) }}
+                                onClick={() => setReplyingTo(null)}
                                 className="btn btn-ghost"
                                 style={{ fontSize: 11, padding: '7px 16px' }}
                               >
                                 Cancel
-                              </button>
-                              <button
-                                onClick={() => {
-                                  setReplyingTo(null)
-                                  patchSuggest(review.name, { phase: 'setup' })
-                                }}
-                                className="btn btn-ghost"
-                                style={{ fontSize: 11, padding: '7px 14px', color: 'var(--orange)', borderColor: 'var(--orange)' }}
-                              >
-                                Re-generate
                               </button>
                               <button
                                 onClick={() => postReply(review.name)}
@@ -720,7 +720,6 @@ export default function GmbDashboardPage() {
                             </div>
                           </div>
                         )}
-
                       </div>
                     )}
                   </div>
@@ -765,9 +764,38 @@ const s: Record<string, React.CSSProperties> = {
   toneBtn:   { flex: 1, padding: '6px 4px', fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.08em', textTransform: 'capitalize', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 5, cursor: 'pointer', color: 'var(--text-muted)', transition: 'all 0.15s' },
   toneBtnActive: { background: 'rgba(242,56,1,0.08)', borderColor: 'var(--orange)', color: 'var(--orange)' },
   textarea: { width: '100%', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, padding: '10px 12px', color: 'var(--text)', fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.6, outline: 'none', resize: 'vertical' },
+  learnedBox:  { marginTop: 12, padding: '10px 12px', background: 'rgba(22,163,74,0.05)', border: '1px solid rgba(22,163,74,0.2)', borderRadius: 6 },
+  learnedText: { fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.6 },
+  clearBtn:    { fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, letterSpacing: '0.06em' },
 
   main:      { flex: 1, minWidth: 0 },
   errorBanner: { background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 6, padding: '12px 16px', color: 'var(--text-secondary)', fontSize: 13, fontFamily: 'var(--font-mono)', marginBottom: 20 },
+
+  // Trainer card
+  trainerCard: { background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '28px', marginBottom: 28, boxShadow: '0 2px 8px rgba(0,0,0,0.06)' },
+  trainerHeader: { marginBottom: 20 },
+  trainerEyebrow: { fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--orange)', marginBottom: 6 },
+  trainerTitle: { fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 700, color: 'var(--text)', marginBottom: 6 },
+  trainerDesc:  { fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.7 },
+  trainerBody:  {},
+  fieldLabel:   { fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 8, display: 'block' },
+  starRow:   { display: 'flex', alignItems: 'center', gap: 4 },
+  starBtn:   { background: 'none', border: 'none', cursor: 'pointer', fontSize: 22, padding: '0 2px', transition: 'color 0.1s' },
+  starLabel: { fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', marginLeft: 6 },
+  lengthGroup:  { display: 'flex', flexWrap: 'wrap', gap: 6 },
+  lengthBtn:    { padding: '5px 12px', fontFamily: 'var(--font-mono)', fontSize: 10, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 5, cursor: 'pointer', color: 'var(--text-muted)', transition: 'all 0.15s' },
+  lengthBtnActive: { background: 'rgba(242,56,1,0.08)', borderColor: 'var(--orange)', color: 'var(--orange)' },
+  loadingPanel: { display: 'flex', alignItems: 'center', gap: 12, padding: '20px 0' },
+  loadingText:  { fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' },
+  roundLabel:   { fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--orange)', marginBottom: 14 },
+  insightText:  { fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 14, padding: '8px 12px', background: 'rgba(22,163,74,0.05)', border: '1px solid rgba(22,163,74,0.15)', borderRadius: 6 },
+  replyCards:   { display: 'flex', flexDirection: 'column', gap: 10 },
+  replyCard:    { background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, padding: '14px 16px' },
+  replyCardNum: { fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.12em', color: 'var(--orange)', marginBottom: 6 },
+  replyCardText:{ color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.7 },
+  charHint:     { fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' },
+  donePanel: { display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 8, padding: '24px 0' },
+
   stats:     { display: 'flex', gap: 12, marginBottom: 24 },
   statCard:  { flex: 1, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: '16px', display: 'flex', flexDirection: 'column', gap: 4 },
   statNum:   { fontFamily: 'var(--font-display)', fontSize: 28, fontWeight: 800, color: 'var(--text)', lineHeight: 1 },
@@ -778,7 +806,6 @@ const s: Record<string, React.CSSProperties> = {
   emptyCard: { background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '48px', textAlign: 'center' },
   emptyTitle:{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 700, color: 'var(--text)', marginBottom: 8 },
   emptyDesc: { color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.7 },
-
   reviewsList:   { display: 'flex', flexDirection: 'column', gap: 12 },
   reviewCard:    { background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '20px', boxShadow: '0 1px 4px rgba(0,0,0,0.04)' },
   reviewHeader:  { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12, flexWrap: 'wrap', gap: 8 },
@@ -794,28 +821,7 @@ const s: Record<string, React.CSSProperties> = {
   existingReply: { background: 'rgba(242,56,1,0.04)', border: '1px solid rgba(242,56,1,0.12)', borderLeft: '3px solid var(--orange)', borderRadius: '0 6px 6px 0', padding: '12px 14px', marginBottom: 8 },
   existingReplyLabel: { fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--orange)', marginBottom: 6 },
   existingReplyText:  { color: 'var(--text-secondary)', fontSize: 12, lineHeight: 1.7 },
-
   replySection:  { marginTop: 4 },
-  replyInputWrap:{},
   charCount:     { fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', textAlign: 'right', marginBottom: 10 },
   replyActions:  { display: 'flex', justifyContent: 'flex-end', gap: 8 },
-
-  // AI Suggest
-  suggestWrap: { marginTop: 4 },
-  suggestPanel: { background: 'rgba(242,56,1,0.03)', border: '1px solid rgba(242,56,1,0.15)', borderRadius: 8, padding: '16px' },
-  suggestPanelHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
-  suggestTitle: { fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--orange)' },
-  closeBtn:     { background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 13, padding: '2px 4px', lineHeight: 1 },
-  suggestLabel: { fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 6 },
-  lengthGroup:  { display: 'flex', flexWrap: 'wrap', gap: 6 },
-  lengthBtn:    { padding: '5px 12px', fontFamily: 'var(--font-mono)', fontSize: 10, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 5, cursor: 'pointer', color: 'var(--text-muted)', transition: 'all 0.15s' },
-  lengthBtnActive: { background: 'rgba(242,56,1,0.08)', borderColor: 'var(--orange)', color: 'var(--orange)' },
-  loadingPanel: { display: 'flex', alignItems: 'center', gap: 10, padding: '16px', background: 'rgba(242,56,1,0.03)', border: '1px solid rgba(242,56,1,0.15)', borderRadius: 8 },
-  loadingText:  { fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' },
-  insightText:  { fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 12, padding: '8px 10px', background: 'rgba(22,163,74,0.05)', border: '1px solid rgba(22,163,74,0.15)', borderRadius: 5 },
-  replyCards:   { display: 'flex', flexDirection: 'column', gap: 10 },
-  replyCard:    { background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 7, padding: '14px' },
-  replyCardNum: { fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.1em', color: 'var(--orange)', marginBottom: 6 },
-  replyCardText:{ color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.7 },
-  charHint:     { fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' },
 }
