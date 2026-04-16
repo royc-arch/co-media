@@ -24,7 +24,15 @@ interface Review {
   reviewReply?: { comment: string }
 }
 
-type Tone = 'professional' | 'friendly' | 'casual'
+type Tone   = 'professional' | 'friendly' | 'casual'
+type Length = 'recommended' | 'condense' | 'medium' | 'detailed'
+
+const LENGTH_LABELS: Record<Length, string> = {
+  recommended: 'Recommended',
+  condense:    'Condense · ~250',
+  medium:      'Medium · ~500',
+  detailed:    'Detailed · ~750',
+}
 
 const STAR_MAP: Record<string, number> = {
   ONE: 1, TWO: 2, THREE: 3, FOUR: 4, FIVE: 5,
@@ -71,6 +79,12 @@ export default function GmbDashboardPage() {
   const [replyTexts,    setReplyTexts]    = useState<Record<string, string>>({})
   const [sendingReply,  setSendingReply]  = useState<string | null>(null)
   const [error,         setError]         = useState('')
+
+  // AI suggest state
+  const [suggestingFor,  setSuggestingFor]  = useState<string | null>(null)
+  const [keywords,       setKeywords]       = useState<Record<string, string>>({})
+  const [replyLength,    setReplyLength]    = useState<Record<string, Length>>({})
+  const [generatingFor,  setGeneratingFor]  = useState<string | null>(null)
 
   // ── Load locations ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -147,6 +161,36 @@ export default function GmbDashboardPage() {
       setError('Failed to post reply.')
     }
     setSendingReply(null)
+  }
+
+  async function suggestReply(review: Review) {
+    setGeneratingFor(review.name)
+    const kws = (keywords[review.name] ?? '')
+      .split(',')
+      .map(k => k.trim())
+      .filter(Boolean)
+    const len = replyLength[review.name] ?? 'recommended'
+
+    const res = await fetch('/api/gmb/suggest-reply', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        reviewText:         review.comment ?? '',
+        reviewAuthor:       review.reviewer?.displayName ?? 'Guest',
+        starRating:         review.starRating,
+        keywords:           kws,
+        length:             len,
+        customInstructions: settings?.custom_instructions ?? '',
+      }),
+    })
+    const d = await res.json() as { reply?: string; error?: string }
+    if (d.reply) {
+      setReplyTexts(p => ({ ...p, [review.name]: d.reply! }))
+      setReplyingTo(review.name)
+    } else {
+      setError(`AI suggest failed: ${d.error ?? 'unknown'}`)
+    }
+    setGeneratingFor(null)
   }
 
   const unreplied = reviews.filter(r => !r.reviewReply).length
@@ -346,31 +390,99 @@ export default function GmbDashboardPage() {
                     {/* Reply input */}
                     {!review.reviewReply && (
                       <div style={s.replySection}>
-                        {!isReplying ? (
-                          <button
-                            onClick={() => setReplyingTo(review.name)}
-                            className="btn btn-ghost"
-                            style={{ fontSize: 11, padding: '7px 16px' }}
-                          >
-                            Reply
-                          </button>
-                        ) : (
+                        {!isReplying && !suggestingFor && (
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                            <button
+                              onClick={() => setReplyingTo(review.name)}
+                              className="btn btn-ghost"
+                              style={{ fontSize: 11, padding: '7px 16px' }}
+                            >
+                              Write Reply
+                            </button>
+                            <button
+                              onClick={() => setSuggestingFor(
+                                suggestingFor === review.name ? null : review.name
+                              )}
+                              className="btn btn-ghost"
+                              style={{ fontSize: 11, padding: '7px 16px', color: 'var(--orange)', borderColor: 'var(--orange)' }}
+                            >
+                              AI Suggest
+                            </button>
+                          </div>
+                        )}
+
+                        {/* AI Suggest panel */}
+                        {suggestingFor === review.name && !isReplying && (
+                          <div style={s.suggestPanel}>
+                            <p style={s.suggestLabel}>Keywords <span style={{ opacity: 0.5 }}>(optional, comma-separated)</span></p>
+                            <input
+                              placeholder="e.g. all-you-can-eat, sushi, value"
+                              value={keywords[review.name] ?? ''}
+                              onChange={e => setKeywords(p => ({ ...p, [review.name]: e.target.value }))}
+                              style={{ fontSize: 12, marginBottom: 10 }}
+                            />
+                            <p style={s.suggestLabel}>Reply length</p>
+                            <div style={s.lengthGroup}>
+                              {(Object.keys(LENGTH_LABELS) as Length[]).map(len => (
+                                <button
+                                  key={len}
+                                  onClick={() => setReplyLength(p => ({ ...p, [review.name]: len }))}
+                                  style={{
+                                    ...s.lengthBtn,
+                                    ...((replyLength[review.name] ?? 'recommended') === len ? s.lengthBtnActive : {}),
+                                  }}
+                                >
+                                  {LENGTH_LABELS[len]}
+                                </button>
+                              ))}
+                            </div>
+                            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                              <button
+                                onClick={() => setSuggestingFor(null)}
+                                className="btn btn-ghost"
+                                style={{ fontSize: 11, padding: '7px 14px' }}
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                onClick={() => suggestReply(review)}
+                                disabled={generatingFor === review.name}
+                                className="btn btn-gold"
+                                style={{ fontSize: 11, padding: '7px 20px' }}
+                              >
+                                {generatingFor === review.name ? 'Generating…' : 'Generate'}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {isReplying && (
                           <div style={s.replyInputWrap}>
                             <textarea
                               autoFocus
                               placeholder="Write your reply…"
                               value={replyTexts[review.name] ?? ''}
                               onChange={e => setReplyTexts(p => ({ ...p, [review.name]: e.target.value }))}
-                              style={{ ...s.textarea, marginBottom: 10 }}
-                              rows={3}
+                              style={{ ...s.textarea, marginBottom: 6 }}
+                              rows={4}
                             />
+                            <p style={s.charCount}>
+                              {(replyTexts[review.name] ?? '').length} characters
+                            </p>
                             <div style={s.replyActions}>
                               <button
-                                onClick={() => setReplyingTo(null)}
+                                onClick={() => { setReplyingTo(null); setSuggestingFor(null) }}
                                 className="btn btn-ghost"
                                 style={{ fontSize: 11, padding: '7px 16px' }}
                               >
                                 Cancel
+                              </button>
+                              <button
+                                onClick={() => setSuggestingFor(review.name)}
+                                className="btn btn-ghost"
+                                style={{ fontSize: 11, padding: '7px 14px', color: 'var(--orange)', borderColor: 'var(--orange)' }}
+                              >
+                                Re-generate
                               </button>
                               <button
                                 onClick={() => postReply(review.name)}
@@ -663,5 +775,32 @@ const s: Record<string, React.CSSProperties> = {
   replyInputWrap: {},
   replyActions: {
     display: 'flex', justifyContent: 'flex-end', gap: 8,
+  },
+  charCount: {
+    fontFamily: 'var(--font-mono)', fontSize: 10,
+    color: 'var(--text-muted)', textAlign: 'right' as const,
+    marginBottom: 10,
+  },
+  suggestPanel: {
+    background: 'rgba(242,56,1,0.03)',
+    border: '1px solid rgba(242,56,1,0.15)',
+    borderRadius: 8, padding: '16px',
+  },
+  suggestLabel: {
+    fontFamily: 'var(--font-mono)', fontSize: 9,
+    letterSpacing: '0.12em', textTransform: 'uppercase' as const,
+    color: 'var(--text-muted)', marginBottom: 6,
+  },
+  lengthGroup: { display: 'flex', flexWrap: 'wrap' as const, gap: 6 },
+  lengthBtn: {
+    padding: '5px 12px',
+    fontFamily: 'var(--font-mono)', fontSize: 10,
+    background: 'var(--surface)', border: '1px solid var(--border)',
+    borderRadius: 5, cursor: 'pointer', color: 'var(--text-muted)',
+    transition: 'all 0.15s',
+  },
+  lengthBtnActive: {
+    background: 'rgba(242,56,1,0.08)',
+    borderColor: 'var(--orange)', color: 'var(--orange)',
   },
 }
