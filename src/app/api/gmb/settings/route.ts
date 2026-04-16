@@ -32,12 +32,13 @@ export async function POST(request: NextRequest) {
   if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 })
 
   const body = await request.json() as {
-    accountName:        string
-    locationName:       string
-    displayName:        string
-    autoReplyEnabled?:  boolean
-    replyTone?:         string
+    accountName:         string
+    locationName:        string
+    displayName:         string
+    autoReplyEnabled?:   boolean
+    replyTone?:          string
     customInstructions?: string
+    promptHints?:        string
   }
 
   const admin = createAdminClient()
@@ -49,6 +50,7 @@ export async function POST(request: NextRequest) {
     auto_reply_enabled:  body.autoReplyEnabled ?? false,
     reply_tone:          body.replyTone ?? 'professional',
     custom_instructions: body.customInstructions ?? null,
+    prompt_hints:        body.promptHints ?? null,
     updated_at:          new Date().toISOString(),
   }, { onConflict: 'user_id,location_name' })
 
