@@ -82,8 +82,13 @@ export default function GmbDashboardPage() {
   const [activeLoc,      setActiveLoc]      = useState(initLoc)
   const [settings,       setSettings]       = useState<LocationSetting | null>(null)
   const [reviews,        setReviews]        = useState<Review[]>([])
+  const [totalReviews,   setTotalReviews]   = useState(0)
+  const [hasMore,        setHasMore]        = useState(false)
+  const [page,           setPage]           = useState(0)
   const [loadingLocs,    setLoadingLocs]    = useState(true)
   const [loadingRevs,    setLoadingRevs]    = useState(false)
+  const [loadingMore,    setLoadingMore]    = useState(false)
+  const [syncing,        setSyncing]        = useState(false)
   const [savingSettings, setSavingSettings] = useState(false)
   const [replyingTo,     setReplyingTo]     = useState<string | null>(null)
   const [replyTexts,     setReplyTexts]     = useState<Record<string, string>>({})
@@ -125,7 +130,7 @@ export default function GmbDashboardPage() {
       .finally(() => setLoadingLocs(false))
   }, [])
 
-  // ── Load reviews when location changes ─────────────────────────────────────
+  // ── Load reviews (page 0) when location changes ───────────────────────────
 
   useEffect(() => {
     if (!activeLoc) return
@@ -134,17 +139,69 @@ export default function GmbDashboardPage() {
 
     setLoadingRevs(true)
     setReviews([])
+    setPage(0)
+    setHasMore(false)
+    setTotalReviews(0)
     setShowTrainer(false)
     resetTrainer()
-    fetch(`/api/gmb/reviews?locationName=${encodeURIComponent(activeLoc)}`)
+
+    fetch(`/api/gmb/reviews?locationName=${encodeURIComponent(activeLoc)}&page=0`)
       .then(r => r.json())
       .then(d => {
-        if (d.error) setError(`Reviews API error: ${d.error}`)
+        if (d.error) { setError(`Reviews API error: ${d.error}`); return }
         setReviews(d.reviews ?? [])
+        setTotalReviews(d.total ?? 0)
+        setHasMore(d.hasMore ?? false)
       })
       .catch(() => setError('Failed to load reviews.'))
       .finally(() => setLoadingRevs(false))
   }, [activeLoc, locations])
+
+  // ── Load more (next page) ──────────────────────────────────────────────────
+
+  async function loadMore() {
+    const nextPage = page + 1
+    setLoadingMore(true)
+    try {
+      const res = await fetch(`/api/gmb/reviews?locationName=${encodeURIComponent(activeLoc)}&page=${nextPage}`)
+      const d   = await res.json()
+      if (d.reviews?.length) {
+        setReviews(prev => [...prev, ...d.reviews])
+        setPage(nextPage)
+        setHasMore(d.hasMore ?? false)
+      }
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+
+  // ── Sync from Google ───────────────────────────────────────────────────────
+
+  async function syncFromGoogle() {
+    setSyncing(true)
+    setError('')
+    try {
+      const res = await fetch('/api/gmb/reviews', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ locationName: activeLoc }),
+      })
+      const d = await res.json()
+      if (d.error) { setError(`Sync failed: ${d.error}`); return }
+
+      // Reload page 0 after sync
+      const fresh = await fetch(`/api/gmb/reviews?locationName=${encodeURIComponent(activeLoc)}&page=0`)
+      const fd    = await fresh.json()
+      setReviews(fd.reviews ?? [])
+      setTotalReviews(fd.total ?? 0)
+      setHasMore(fd.hasMore ?? false)
+      setPage(0)
+    } catch {
+      setError('Sync failed.')
+    } finally {
+      setSyncing(false)
+    }
+  }
 
   // ── Save settings ──────────────────────────────────────────────────────────
 
@@ -316,6 +373,7 @@ export default function GmbDashboardPage() {
     } catch { /* non-fatal */ }
   }
 
+  // Count from loaded reviews (approximate until all pages loaded)
   const unreplied = reviews.filter(r => !r.reviewReply).length
   const replied   = reviews.filter(r =>  r.reviewReply).length
 
@@ -611,11 +669,11 @@ export default function GmbDashboardPage() {
             </div>
           )}
 
-          {/* Stats */}
-          {reviews.length > 0 && (
+          {/* Stats + sync */}
+          <div style={s.statsRow}>
             <div style={s.stats}>
               <div style={s.statCard}>
-                <span style={s.statNum}>{reviews.length}</span>
+                <span style={s.statNum}>{totalReviews}</span>
                 <span style={s.statLabel}>Total Reviews</span>
               </div>
               <div style={s.statCard}>
@@ -627,7 +685,15 @@ export default function GmbDashboardPage() {
                 <span style={s.statLabel}>Replied</span>
               </div>
             </div>
-          )}
+            <button
+              onClick={syncFromGoogle}
+              disabled={syncing}
+              className="btn btn-ghost"
+              style={{ fontSize: 11, padding: '8px 16px', flexShrink: 0, alignSelf: 'flex-start' }}
+            >
+              {syncing ? 'Syncing…' : '↻ Sync from Google'}
+            </button>
+          </div>
 
           {/* Reviews */}
           {loadingRevs ? (
@@ -641,6 +707,7 @@ export default function GmbDashboardPage() {
               <p style={s.emptyDesc}>Reviews will appear here once customers leave them on Google.</p>
             </div>
           ) : (
+            <>
             <div style={s.reviewsList}>
               {reviews.map(review => {
                 const isReplying = replyingTo === review.name
@@ -726,6 +793,26 @@ export default function GmbDashboardPage() {
                 )
               })}
             </div>
+
+            {/* Load more */}
+            {hasMore && (
+              <div style={{ display: 'flex', justifyContent: 'center', marginTop: 20 }}>
+                <button
+                  onClick={loadMore}
+                  disabled={loadingMore}
+                  className="btn btn-ghost"
+                  style={{ fontSize: 11, padding: '9px 24px' }}
+                >
+                  {loadingMore ? 'Loading…' : `Load more (showing ${reviews.length} of ${totalReviews})`}
+                </button>
+              </div>
+            )}
+            {!hasMore && reviews.length > 0 && (
+              <p style={{ textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', marginTop: 20 }}>
+                All {totalReviews} reviews loaded
+              </p>
+            )}
+            </>
           )}
         </main>
       </div>
@@ -796,7 +883,8 @@ const s: Record<string, React.CSSProperties> = {
   charHint:     { fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' },
   donePanel: { display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 8, padding: '24px 0' },
 
-  stats:     { display: 'flex', gap: 12, marginBottom: 24 },
+  statsRow:  { display: 'flex', gap: 16, alignItems: 'flex-start', marginBottom: 24 },
+  stats:     { display: 'flex', gap: 12, flex: 1 },
   statCard:  { flex: 1, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: '16px', display: 'flex', flexDirection: 'column', gap: 4 },
   statNum:   { fontFamily: 'var(--font-display)', fontSize: 28, fontWeight: 800, color: 'var(--text)', lineHeight: 1 },
   statLabel: { fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-muted)' },
