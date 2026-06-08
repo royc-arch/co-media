@@ -11,7 +11,7 @@
 import { createClient }      from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { NextRequest }       from 'next/server'
-import ffmpegStatic          from 'ffmpeg-static'
+import ffmpegInstaller       from '@ffmpeg-installer/ffmpeg'
 import { execFile }          from 'child_process'
 import { promisify }         from 'util'
 import fs                    from 'fs/promises'
@@ -38,6 +38,15 @@ export async function POST(request: NextRequest) {
 
   if (!videoJobId || !Array.isArray(videoUrls) || videoUrls.length < 2) {
     return Response.json({ error: 'Missing videoJobId or videoUrls' }, { status: 400 })
+  }
+
+  // Guard: if the ffmpeg binary couldn't be resolved, fail loudly here rather
+  // than crashing deep inside execFile.
+  if (!ffmpegInstaller?.path) {
+    return Response.json(
+      { error: 'Video stitching is unavailable: the ffmpeg binary is missing.' },
+      { status: 503 },
+    )
   }
 
   const admin  = createAdminClient()
@@ -79,7 +88,7 @@ export async function POST(request: NextRequest) {
         prev = out
       }
       await execFileAsync(
-        ffmpegStatic!,
+        ffmpegInstaller.path,
         [
           ...clipPaths.flatMap(p => ['-i', path.basename(p)]),
           '-filter_complex', parts.join(';'),
@@ -92,7 +101,7 @@ export async function POST(request: NextRequest) {
       )
     } else {
       await execFileAsync(
-        ffmpegStatic!,
+        ffmpegInstaller.path,
         [
           '-f', 'concat',
           '-safe', '0',
