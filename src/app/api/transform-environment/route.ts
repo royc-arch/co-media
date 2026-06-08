@@ -2,28 +2,30 @@
  * POST /api/transform-environment  (multipart/form-data)
  * Fields: image1 (File|url), image2 (File|url), jobId, intensity, upscale?
  *
- * Route A — NON-GENERATIVE colour/tone transfer.
- * Matches the reference photo's colour temperature, tonal palette and contrast
- * onto the source via Reinhard transfer in Lab space, then blends toward the
- * original by `intensity`. Geometry is never touched: architecture, furniture,
- * signage/text and people stay pixel-identical — only colour moves.
+ * Atmosphere / environment transfer (generative).
+ * The goal is to re-create the OVERALL VIBE of the reference — its mood,
+ * lighting character, colour palette and decor language — on the user's space.
+ * The model is given the reference as an actual image and creative latitude to
+ * reinterpret decor (lighting, plants, table styling, finishes) so the room
+ * belongs to the reference's environment, while keeping the same kind of space,
+ * rough layout and camera framing.
  *
  * Pipeline:
  *   1. Upload both images to Supabase Storage
- *   2. Reinhard colour transfer (reference stats → source), blended by intensity
+ *   2. gpt-image-1.5 images.edit with BOTH images (source + atmosphere reference)
  *   3. Optional Real-ESRGAN HD upscale
  */
 
 import { createClient }      from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { NextRequest }       from 'next/server'
+import OpenAI, { toFile }   from 'openai'
 import Replicate             from 'replicate'
 import sharp                 from 'sharp'
 
-export const maxDuration = 120
+export const maxDuration = 300
 
-// Kept for backwards compatibility with the page's type import. The
-// non-generative pipeline no longer produces a scene analysis.
+// Kept for backwards compatibility with the page's type import.
 export type EnvironmentAnalysis = {
   space_type:    string
   primary_mood:  string
@@ -37,113 +39,41 @@ export type EnvironmentAnalysis = {
   parameter_directions: Record<string, string>
 }
 
-// ── sRGB ⇄ Lab colour conversion (D65) ──────────────────────────────────────────
+// ── Atmosphere-transfer prompt ──────────────────────────────────────────────────
+// The reference is supplied as an image (see the edit call), so the prompt only
+// has to set the goal, the creative latitude, and what to keep recognisable.
 
-const Xn = 0.95047, Yn = 1.0, Zn = 1.08883
+function buildTransferPrompt(intensity: number): string {
+  const strength =
+    intensity >= 90 ? 'Fully commit to the reference environment.' :
+    intensity >= 70 ? 'Strongly adopt the reference environment.'  :
+    intensity >= 50 ? 'Moderately adopt the reference environment, keeping more of the original.' :
+    intensity >= 30 ? 'Lightly nudge toward the reference environment.' :
+                      'Apply only a subtle hint of the reference environment.'
 
-function srgbToLinear(c: number): number {
-  c /= 255
-  return c > 0.04045 ? Math.pow((c + 0.055) / 1.055, 2.4) : c / 12.92
-}
+  return `You are given TWO images.
 
-function linearToByte(c: number): number {
-  const v = c > 0.0031308 ? 1.055 * Math.pow(c, 1 / 2.4) - 0.055 : 12.92 * c
-  return Math.max(0, Math.min(255, Math.round(v * 255)))
-}
+IMAGE 1 is the user's space — a restaurant / dining interior.
+IMAGE 2 is the ATMOSPHERE REFERENCE — the target environment, mood and vibe.
 
-function fLab(t: number): number {
-  return t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116
-}
+GOAL: Reimagine IMAGE 1 so it FEELS like the environment of IMAGE 2. Capture IMAGE 2's overall atmosphere — its mood, lighting character, colour palette, materials and decor language — and apply that whole "vibe" to IMAGE 1. The result should read as the SAME room, redesigned to live in IMAGE 2's world.
 
-function fLabInv(t: number): number {
-  const t3 = t * t * t
-  return t3 > 0.008856 ? t3 : (t - 16 / 116) / 7.787
-}
+You have creative freedom over decor and finishes to achieve the vibe. Lighting fixtures, table settings, plants and flowers, wall and surface materials, textures and props MAY be reinterpreted, replaced or restyled so they belong to the reference's environment. Do not feel bound to keep every object identical — make the space feel authentically like IMAGE 2.
 
-function rgbToLab(r: number, g: number, b: number): [number, number, number] {
-  const rl = srgbToLinear(r), gl = srgbToLinear(g), bl = srgbToLinear(b)
-  const x = rl * 0.4124564 + gl * 0.3575761 + bl * 0.1804375
-  const y = rl * 0.2126729 + gl * 0.7151522 + bl * 0.0721750
-  const z = rl * 0.0193339 + gl * 0.1191920 + bl * 0.9503041
-  const fx = fLab(x / Xn), fy = fLab(y / Yn), fz = fLab(z / Zn)
-  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)]
-}
+KEEP recognisable (do not redesign these):
+- the general type and scale of the space
+- the rough spatial layout — where the bar / counter / tables / windows roughly are
+- the camera angle and framing
 
-function labToRgb(L: number, a: number, b: number): [number, number, number] {
-  const fy = (L + 16) / 116, fx = fy + a / 500, fz = fy - b / 200
-  const x = Xn * fLabInv(fx), y = Yn * fLabInv(fy), z = Zn * fLabInv(fz)
-  const rl =  x * 3.2404542 + y * -1.5371385 + z * -0.4985314
-  const gl =  x * -0.9692660 + y * 1.8760108 + z * 0.0415560
-  const bl =  x * 0.0556434 + y * -0.2040259 + z * 1.0572252
-  return [linearToByte(rl), linearToByte(gl), linearToByte(bl)]
-}
+MATCH from IMAGE 2:
+- overall brightness level — bright & airy vs. dark & moody. Read the reference's actual brightness and follow it; do NOT default to a dark/moody look.
+- lighting quality, direction and warmth
+- colour temperature, colour grade and contrast
+- the material, texture and styling language
 
-type LabStats = { mL: number; ma: number; mb: number; sL: number; sa: number; sb: number }
+Do NOT copy IMAGE 2's exact room or its specific objects one-to-one — capture its ENVIRONMENT and atmosphere, then express it in IMAGE 1's space.
 
-// Per-channel mean/std of an RGB buffer in Lab space.
-function labStats(data: Buffer | Uint8Array): LabStats {
-  const n = (data.length / 3) | 0
-  let sumL = 0, suma = 0, sumb = 0
-  const lab = new Float32Array(n * 3)
-  for (let p = 0, i = 0; p < n; p++, i += 3) {
-    const [L, a, b] = rgbToLab(data[i], data[i + 1], data[i + 2])
-    lab[i] = L; lab[i + 1] = a; lab[i + 2] = b
-    sumL += L; suma += a; sumb += b
-  }
-  const mL = sumL / n, ma = suma / n, mb = sumb / n
-  let vL = 0, va = 0, vb = 0
-  for (let i = 0; i < lab.length; i += 3) {
-    vL += (lab[i] - mL) ** 2
-    va += (lab[i + 1] - ma) ** 2
-    vb += (lab[i + 2] - mb) ** 2
-  }
-  return {
-    mL, ma, mb,
-    sL: Math.sqrt(vL / n) || 1,
-    sa: Math.sqrt(va / n) || 1,
-    sb: Math.sqrt(vb / n) || 1,
-  }
-}
-
-// Reinhard colour transfer: remap source so its Lab mean/std match the
-// reference, then blend toward the original by `t` (0–1). Geometry untouched.
-async function colorTransfer(sourceBuf: Buffer, refBuf: Buffer, t: number): Promise<Buffer> {
-  const { data: src, info } = await sharp(sourceBuf)
-    .removeAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true })
-
-  // Reference downsampled — stats don't need full resolution.
-  const { data: ref } = await sharp(refBuf)
-    .removeAlpha()
-    .resize(320, 320, { fit: 'inside', withoutEnlargement: true })
-    .raw()
-    .toBuffer({ resolveWithObject: true })
-
-  const s = labStats(src)
-  const r = labStats(ref)
-
-  const aL = r.sL / s.sL, aA = r.sa / s.sa, aB = r.sb / s.sb
-  const out = Buffer.allocUnsafe(src.length)
-
-  for (let i = 0; i < src.length; i += 3) {
-    const [L, a, b] = rgbToLab(src[i], src[i + 1], src[i + 2])
-    // Full Reinhard target…
-    const Lt = (L - s.mL) * aL + r.mL
-    const at = (a - s.ma) * aA + r.ma
-    const bt = (b - s.mb) * aB + r.mb
-    // …blended toward the original by intensity.
-    const [or, og, ob] = labToRgb(
-      L + (Lt - L) * t,
-      a + (at - a) * t,
-      b + (bt - b) * t,
-    )
-    out[i] = or; out[i + 1] = og; out[i + 2] = ob
-  }
-
-  return sharp(out, { raw: { width: info.width, height: info.height, channels: 3 } })
-    .png()
-    .toBuffer()
+${strength}`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -177,6 +107,7 @@ export async function POST(request: NextRequest) {
   if ((!image1File && !image1UrlIn) || (!image2File && !image2UrlIn) || !jobId)
     return new Response('Missing required fields', { status: 400 })
 
+  const openai    = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
   const replicate = new Replicate({ auth: process.env.REPLICATE_API_TOKEN })
   const admin     = createAdminClient()
   const encoder   = new TextEncoder()
@@ -220,13 +151,36 @@ export async function POST(request: NextRequest) {
           status: 'processing',
         })
 
-        // ── Step 2: Colour/tone transfer (geometry untouched) ─────────
-        send('progress', { step: 'generating', message: 'Matching reference colour & tone…' })
+        // ── Step 2: Atmosphere transfer — model sees BOTH images ──────
+        send('progress', { step: 'generating', message: 'Recreating the reference atmosphere…' })
 
-        const outputBuffer = await colorTransfer(image1Buf, image2Buf, intensity / 100)
-        const outputUrl    = await upload(outputBuffer, 'output', 'image/png')
+        const toPng = (buf: Buffer) =>
+          sharp(buf).resize(1280, 1280, { fit: 'inside', withoutEnlargement: true }).png().toBuffer()
 
-        // ── Step 3: Optional HD upscale via Replicate Real-ESRGAN ────
+        const [origPng, refPng] = await Promise.all([toPng(image1Buf), toPng(image2Buf)])
+        const origFile = await toFile(origPng, 'original.png',  { type: 'image/png' })
+        const refFile  = await toFile(refPng,  'reference.png', { type: 'image/png' })
+
+        const editResult = await openai.images.edit({
+          model:          'gpt-image-1.5',
+          image:          [origFile, refFile],
+          prompt:         buildTransferPrompt(intensity),
+          input_fidelity: 'low',     // give the model latitude to restyle decor
+          quality:        'high',
+          size:           'auto',    // keep the source's aspect / framing
+          output_format:  'png',
+        })
+
+        const imgData = editResult.data?.[0]
+        let outputBuffer: Buffer
+        if (imgData?.b64_json)     outputBuffer = Buffer.from(imgData.b64_json, 'base64')
+        else if (imgData?.url)     outputBuffer = await fetchBuffer(imgData.url)
+        else throw new Error('gpt-image returned no image data')
+
+        // ── Step 3: Upload result ─────────────────────────────────────
+        const outputUrl = await upload(outputBuffer, 'output', 'image/png')
+
+        // ── Step 4: Optional HD upscale via Replicate Real-ESRGAN ────
         let hdOutputUrl: string | null = null
         if (upscale) {
           send('progress', { step: 'upscaling', message: 'Enhancing to HD…' })
