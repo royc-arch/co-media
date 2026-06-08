@@ -3,12 +3,11 @@
  * Fields: image1 (File|url), image2 (File|url), jobId, intensity, upscale?
  *
  * Atmosphere / environment transfer (generative).
- * The goal is to re-create the OVERALL VIBE of the reference — its mood,
- * lighting character, colour palette and decor language — on the user's space.
- * The model is given the reference as an actual image and creative latitude to
- * reinterpret decor (lighting, plants, table styling, finishes) so the room
- * belongs to the reference's environment, while keeping the same kind of space,
- * rough layout and camera framing.
+ * The goal is to re-light and re-mood the user's space so it FEELS like the
+ * reference's environment (mood, lighting, colour grade, ambiance), while
+ * KEEPING the layout, object positions, and the shape & material of the tables
+ * and furniture unchanged. input_fidelity 'high' locks geometry; the prompt
+ * pushes the atmosphere change. Faces / tiny details are not preserved.
  *
  * Pipeline:
  *   1. Upload both images to Supabase Storage
@@ -53,25 +52,26 @@ function buildTransferPrompt(intensity: number): string {
 
   return `You are given TWO images.
 
-IMAGE 1 is the user's space — a restaurant / dining interior.
+IMAGE 1 is the user's space — a restaurant / dining interior. This is the room to keep.
 IMAGE 2 is the ATMOSPHERE REFERENCE — the target environment, mood and vibe.
 
-GOAL: Reimagine IMAGE 1 so it FEELS like the environment of IMAGE 2. Capture IMAGE 2's overall atmosphere — its mood, lighting character, colour palette, materials and decor language — and apply that whole "vibe" to IMAGE 1. The result should read as the SAME room, redesigned to live in IMAGE 2's world.
+GOAL: Re-light and re-mood IMAGE 1 so it FEELS like the environment of IMAGE 2. Transfer IMAGE 2's whole atmosphere — its mood, lighting character and direction, colour temperature, colour grade, contrast and overall ambiance — onto IMAGE 1, so the room feels like it lives in IMAGE 2's world. Be bold with the ATMOSPHERE; this is the point.
 
-You have creative freedom over decor and finishes to achieve the vibe. Lighting fixtures, table settings, plants and flowers, wall and surface materials, textures and props MAY be reinterpreted, replaced or restyled so they belong to the reference's environment. Do not feel bound to keep every object identical — make the space feel authentically like IMAGE 2.
+PRESERVE EXACTLY from IMAGE 1 — these must NOT change:
+- the overall spatial layout and composition
+- the position of every object and piece of furniture — do not move, add or remove tables, chairs, counters, fixtures or props
+- the SHAPE and MATERIAL of the tables and furniture (e.g. the same wood stays the same wood, same shape)
+- architectural structure and proportions, camera angle and framing
 
-KEEP recognisable (do not redesign these):
-- the general type and scale of the space
-- the rough spatial layout — where the bar / counter / tables / windows roughly are
-- the camera angle and framing
+YOU MAY freely change to achieve the vibe:
+- lighting — brightness, warmth, direction, pools of light, shadows, glow, reflections
+- overall colour grade, contrast and atmosphere
+- ambient mood and the feel of surfaces (without changing what the objects ARE or where they sit)
+Faces and tiny incidental details do NOT need to be preserved.
 
-MATCH from IMAGE 2:
-- overall brightness level — bright & airy vs. dark & moody. Read the reference's actual brightness and follow it; do NOT default to a dark/moody look.
-- lighting quality, direction and warmth
-- colour temperature, colour grade and contrast
-- the material, texture and styling language
+MATCH IMAGE 2's overall brightness level — if the reference is bright & airy, the result must be bright & airy; if it is dark & moody, the result must be dark & moody. Read the reference's actual brightness and follow it; do NOT default to a dark look.
 
-Do NOT copy IMAGE 2's exact room or its specific objects one-to-one — capture its ENVIRONMENT and atmosphere, then express it in IMAGE 1's space.
+Do NOT copy IMAGE 2's room, furniture or objects into the result. IMAGE 2 is ONLY an atmosphere reference — keep IMAGE 1's own objects, in their own places, in their own shapes.
 
 ${strength}`
 }
@@ -165,7 +165,7 @@ export async function POST(request: NextRequest) {
           model:          'gpt-image-1.5',
           image:          [origFile, refFile],
           prompt:         buildTransferPrompt(intensity),
-          input_fidelity: 'low',     // give the model latitude to restyle decor
+          input_fidelity: 'high',    // lock layout, object positions, table shape & material
           quality:        'high',
           size:           'auto',    // keep the source's aspect / framing
           output_format:  'png',
