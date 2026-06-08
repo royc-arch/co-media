@@ -6,10 +6,11 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 
 const NAV_LINKS = [
-  { href: '/',          label: 'Studio'   },
-  { href: '/showcase',  label: 'Showcase' },
-  { href: '/history',   label: 'History'  },
-  { href: '/gmb',       label: 'Reviews'  },
+  { href: '/',             label: 'Studio'      },
+  { href: '/environment',  label: 'Environment' },
+  { href: '/showcase',     label: 'Showcase'    },
+  { href: '/history',      label: 'History'     },
+  { href: '/gmb',          label: 'Reviews'     },
 ]
 
 export default function Nav() {
