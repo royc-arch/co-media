@@ -4,6 +4,10 @@ import { useEffect, useState } from 'react'
 import { useSearchParams }     from 'next/navigation'
 import Link                    from 'next/link'
 
+// This page reads query params via useSearchParams (a client-only hook),
+// so it must opt out of static prerendering or the production build fails.
+export const dynamic = 'force-dynamic'
+
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 interface LocationSetting {
