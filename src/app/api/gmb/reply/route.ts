@@ -46,6 +46,14 @@ export async function POST(request: NextRequest) {
     }
 
     if (!succeeded) {
+      // 404 means the review was deleted by the reviewer or removed by Google
+      if (lastError.includes('404') || lastError.includes('NOT_FOUND')) {
+        // Mark as removed so it no longer appears in unreplied queue
+        const admin = createAdminClient()
+        await admin.from('gmb_reviews').update({ removed_from_google: true })
+          .eq('review_name', reviewName).eq('user_id', user.id)
+        return Response.json({ error: 'Review no longer exists on Google (deleted or removed).', skipped: true }, { status: 404 })
+      }
       throw new Error(`All reply endpoints failed.\nLast error: ${lastError}`)
     }
 

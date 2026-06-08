@@ -58,6 +58,29 @@ export async function POST(request: NextRequest) {
   return Response.json({ ok: true })
 }
 
+export async function PATCH(request: NextRequest) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const locationName = new URL(request.url).searchParams.get('locationName')
+  if (!locationName) return Response.json({ error: 'locationName required' }, { status: 400 })
+
+  const body = await request.json() as { prompt_hints?: string | null }
+  const patch: Record<string, unknown> = { updated_at: new Date().toISOString() }
+  if ('prompt_hints' in body) patch.prompt_hints = body.prompt_hints ?? null
+
+  const admin = createAdminClient()
+  const { error } = await admin
+    .from('gmb_settings')
+    .update(patch)
+    .eq('user_id', user.id)
+    .eq('location_name', locationName)
+
+  if (error) return Response.json({ error: error.message }, { status: 500 })
+  return Response.json({ ok: true })
+}
+
 export async function DELETE(request: NextRequest) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
