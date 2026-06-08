@@ -1,12 +1,8 @@
 'use client'
 
-import { useEffect, useState, useMemo, useRef } from 'react'
+import { useEffect, useState, useMemo, useRef, Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import Link                    from 'next/link'
-
-// This page reads query params via useSearchParams (a client-only hook),
-// so it must opt out of static prerendering or the production build fails.
-export const dynamic = 'force-dynamic'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -102,7 +98,17 @@ function timeAgo(iso: string): string {
 
 // ── Main page ──────────────────────────────────────────────────────────────────
 
+// Wrap the search-param-reading component in Suspense so the production
+// build doesn't fail with the useSearchParams prerender error (Next 16).
 export default function GmbDashboardPage() {
+  return (
+    <Suspense fallback={null}>
+      <GmbDashboardInner />
+    </Suspense>
+  )
+}
+
+function GmbDashboardInner() {
   const searchParams = useSearchParams()
   const router       = useRouter()
   const initLoc      = searchParams.get('loc') ?? ''
