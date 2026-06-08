@@ -80,6 +80,7 @@ export default function HomePage() {
   const [original,        setOriginal]        = useState<File | null>(null)
   const [reference,       setReference]       = useState<File | null>(null)
   const [intensity,       setIntensity]       = useState(80)
+  const [transferBackground, setTransferBackground] = useState(false)
   const [foodAnalysis,    setFoodAnalysis]    = useState<FoodAnalysis | null>(null)
   const [stage,           setStage]           = useState<Stage>('idle')
   const [stepKey,         setStepKey]         = useState('uploading')
@@ -134,6 +135,7 @@ export default function HomePage() {
       formData.append('image1', blob1, 'original.jpg')
       formData.append('jobId', crypto.randomUUID())
       formData.append('intensity', String(intensity))
+      if (transferBackground) formData.append('transfer_background', '1')
 
       if (selectedSavedRef) {
         // Use saved reference by URL — no upload needed
@@ -205,6 +207,7 @@ export default function HomePage() {
     setReference(null)
     setSelectedSavedRef(null)
     setIntensity(80)
+    setTransferBackground(false)
     setFoodAnalysis(null)
     setStage('idle')
     setOutputUrl(null)
@@ -293,14 +296,27 @@ export default function HomePage() {
 
             <div style={s.belowUpload} className="animate-fade-up">
               {stage === 'idle' && (
-                <button
-                  className="btn btn-gold"
-                  onClick={handleTransform}
-                  disabled={!original || (!reference && !selectedSavedRef)}
-                  style={{ minWidth: 160 }}
-                >
-                  Transform →
-                </button>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
+                    <input
+                      type="checkbox"
+                      checked={transferBackground}
+                      onChange={e => setTransferBackground(e.target.checked)}
+                      style={{ accentColor: 'var(--gold)', width: 14, height: 14, cursor: 'pointer' }}
+                    />
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-secondary)' }}>
+                      Also transfer background
+                    </span>
+                  </label>
+                  <button
+                    className="btn btn-gold"
+                    onClick={handleTransform}
+                    disabled={!original || (!reference && !selectedSavedRef)}
+                    style={{ minWidth: 160 }}
+                  >
+                    Transform →
+                  </button>
+                </div>
               )}
 
               {isProcessing && (

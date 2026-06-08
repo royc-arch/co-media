@@ -352,8 +352,9 @@ export async function POST(request: NextRequest) {
   const image1UrlIn     = formData.get('image1_url')    as string | null
   const image2UrlIn     = formData.get('image2_url')    as string | null
   const jobId           = formData.get('jobId')         as string | null
-  const intensity       = Math.min(100, Math.max(10, Number(formData.get('intensity') ?? 80)))
-  const foodAnalysisRaw = formData.get('food_analysis') as string | null
+  const intensity          = Math.min(100, Math.max(10, Number(formData.get('intensity') ?? 80)))
+  const transferBackground = formData.get('transfer_background') === '1'
+  const foodAnalysisRaw    = formData.get('food_analysis') as string | null
 
   // If user has manually adjusted parameters, their version is passed back directly
   let providedFoodAnalysis: FoodAnalysis | null = null
@@ -503,12 +504,13 @@ Output strict JSON only: {"saturation":0,"contrast":0,"density":0,"softness":0}`
         send('progress', { step: 'generating', message: 'Applying reference atmosphere…' })
         console.log('[transform] editing with gpt-image-1')
 
-        const origPng = await sharp(image1Buf)
-          .resize(1024, 1024, { fit: 'inside', withoutEnlargement: true })
-          .png()
-          .toBuffer()
+        const toPng = (buf: Buffer) =>
+          sharp(buf).resize(1024, 1024, { fit: 'inside', withoutEnlargement: true }).png().toBuffer()
 
-        const origFile = await toFile(origPng, 'original.png', { type: 'image/png' })
+        const origFile = await toFile(await toPng(image1Buf), 'original.png', { type: 'image/png' })
+        const refFile  = transferBackground
+          ? await toFile(await toPng(image2Buf), 'reference.png', { type: 'image/png' })
+          : null
 
         const intensityDesc =
           intensity >= 90 ? 'Apply at full strength — completely transform the lighting to match the reference atmosphere.' :
@@ -519,6 +521,36 @@ Output strict JSON only: {"saturation":0,"contrast":0,"density":0,"softness":0}`
 
         const styleGuide = STYLE_DIRECTION[styleCategory]
 
+        const keepBlock = transferBackground
+          ? `What to KEEP exactly as-is:
+- Every food item, ingredient, garnish, plating, and plate/bowl shape — completely unchanged. Do not redraw, restyle, or reshape the food.
+- The dish stays the hero and stays in focus; keep its scale and the camera angle relative to the dish.`
+          : `What to KEEP exactly as-is:
+- Every food item, ingredient, garnish, plating, and plate shape — unchanged
+- Every background object and prop — soy sauce bottles, chopsticks, condiment dishes, napkins, cutlery, decorations, anything present in the scene stays in the exact same position
+- The original background surface, table material, and environment — unchanged
+- Composition, camera angle, and framing — identical
+- Do not add, remove, replace, or reposition any element in the scene`
+
+        const adjustBlock = transferBackground
+          ? `Food appearance (colour, brightness, exposure, lighting, shadows):
+- Relight the food to match the target atmosphere described above. ${styleGuide.prohibitions}
+- Give the food the same light direction, colour and intensity as the target atmosphere.
+
+Background / setting — replace it with IMAGE 2's environment:
+- IMAGE 2 is the BACKGROUND reference. Bring IMAGE 2's whole environment over — its setting, surface/table, materials, colours and ambiance — and place the dish into it.
+- Integrate it NATURALLY so the whole image looks like one real photograph, not a paste-up: match perspective, add believable contact shadows and subtle reflections where the food meets the new surface, keep one consistent light direction across food and background, and keep depth-of-field/focus on the food.
+- Do NOT copy IMAGE 2 object-for-object, and do NOT let any background element cover or overlap the food.`
+          : `What to ADJUST (lighting only, not content):
+- Relight the entire scene to exactly match the target atmosphere described above
+- ${styleGuide.prohibitions}
+- Relight the food with the same light direction, colour, and intensity as the target atmosphere
+- Do NOT replace the background with a new one — only change how the existing background is lit`
+
+        const closingLine = transferBackground
+          ? `The result must look like one natural professional food photograph: the exact same dish, relit to the reference atmosphere, sitting naturally inside the reference's environment.`
+          : `The result must look like the exact same photo taken under different studio lighting and post-processed for maximum food appeal — same scene, same objects, different light and enhanced food quality.`
+
         const prompt = `Professional food photo retouching — lighting, atmosphere, and food quality enhancement.
 
 Style classification: ${styleCategory}
@@ -528,26 +560,17 @@ Target atmosphere (from reference image): ${atmosphere}
 
 Application intensity (${intensity}%): ${intensityDesc}
 
-What to KEEP exactly as-is:
-- Every food item, ingredient, garnish, plating, and plate shape — unchanged
-- Every background object and prop — soy sauce bottles, chopsticks, condiment dishes, napkins, cutlery, decorations, anything present in the scene stays in the exact same position
-- The original background surface, table material, and environment — unchanged
-- Composition, camera angle, and framing — identical
-- Do not add, remove, replace, or reposition any element in the scene
+${keepBlock}
 
-What to ADJUST (lighting only, not content):
-- Relight the entire scene to exactly match the target atmosphere described above
-- ${styleGuide.prohibitions}
-- Relight the food with the same light direction, colour, and intensity as the target atmosphere
-- Do NOT replace the background with a new one — only change how the existing background is lit
+${adjustBlock}
 
 ${foodOptPrompt}
 
-The result must look like the exact same photo taken under different studio lighting and post-processed for maximum food appeal — same scene, same objects, different light and enhanced food quality.`
+${closingLine}`
 
         const editResult = await openai.images.edit({
           model:  'gpt-image-1.5',
-          image:  origFile,
+          image:  refFile ? [origFile, refFile] : origFile,
           prompt,
           input_fidelity:  'high',
           quality:         'high',
