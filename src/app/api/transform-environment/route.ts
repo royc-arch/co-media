@@ -1,69 +1,29 @@
 /**
  * POST /api/transform-environment  (multipart/form-data)
- * Fields: image1 (File|url), image2 (File|url), jobId, intensity, env_analysis?
+ * Fields: image1 (File|url), image2 (File|url), jobId, intensity, upscale?
+ *
+ * Route A — NON-GENERATIVE colour/tone transfer.
+ * Matches the reference photo's colour temperature, tonal palette and contrast
+ * onto the source via Reinhard transfer in Lab space, then blends toward the
+ * original by `intensity`. Geometry is never touched: architecture, furniture,
+ * signage/text and people stay pixel-identical — only colour moves.
  *
  * Pipeline:
  *   1. Upload both images to Supabase Storage
- *   2. GPT-4o-mini → analyse the SOURCE space (8-param panel for the UI +
- *      light source-space adjustment hints)
- *   3. gpt-image-1.5 → style transfer with BOTH images as visual input:
- *      image 1 = the space to transform, image 2 = the lighting/atmosphere
- *      reference the model actually looks at (no lossy image→text step)
+ *   2. Reinhard colour transfer (reference stats → source), blended by intensity
+ *   3. Optional Real-ESRGAN HD upscale
  */
 
 import { createClient }      from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { NextRequest }       from 'next/server'
-import OpenAI, { toFile }   from 'openai'
 import Replicate             from 'replicate'
 import sharp                 from 'sharp'
 
-export const maxDuration = 300
+export const maxDuration = 120
 
-// ── Build the style-transfer prompt ────────────────────────────────────────────
-// The reference is supplied to the model as an actual image (see the edit call),
-// so the prompt only has to explain the ROLES of the two images and what to
-// preserve — not describe the reference in words.
-
-function buildTransferPrompt(intensity: number, envOptPrompt: string): string {
-  const intensityDesc =
-    intensity >= 90 ? 'full strength — fully match the reference' :
-    intensity >= 70 ? 'strong'      :
-    intensity >= 50 ? 'moderate'    :
-    intensity >= 30 ? 'subtle'      :
-                      'very subtle'
-
-  const envSection = envOptPrompt
-    ? `\n\nAdditional source-space adjustments (apply where they do not conflict with the reference):\n${envOptPrompt}`
-    : ''
-
-  return `You are given TWO images.
-
-IMAGE 1 is the dining space to transform — this is the base. Keep it.
-IMAGE 2 is the STYLE REFERENCE — use it ONLY as a lighting, colour and mood reference.
-
-TASK: Re-light and colour-grade IMAGE 1 so its atmosphere matches IMAGE 2. Match IMAGE 2's:
-- overall brightness level (bright & airy vs. dark & moody)
-- lighting quality and direction (soft/even vs. dramatic/directional)
-- colour temperature (warm/cool) and colour grade
-- contrast and shadow depth
-
-CRITICAL — match the OVERALL BRIGHTNESS of IMAGE 2. If IMAGE 2 is bright, high-key and airy, the result MUST be bright and airy. If IMAGE 2 is dark and moody, the result MUST be dark and moody. Do NOT default to a dark/moody look — read the reference's actual brightness and follow it.
-
-PRESERVE from IMAGE 1 exactly (do not change):
-- furniture layout and positions
-- architectural structure and proportions
-- every ceiling fixture and light fitting — positions and shapes
-- camera angle and framing
-- the identity of any people present
-
-DO NOT copy any objects, furniture, materials, signage, tiles, or architecture FROM IMAGE 2 into the result. IMAGE 2 is only an atmosphere reference, never a source of content.
-
-Application strength: ${intensity}% (${intensityDesc}).${envSection}`
-}
-
-// ── Environment analysis types ─────────────────────────────────────────────────
-
+// Kept for backwards compatibility with the page's type import. The
+// non-generative pipeline no longer produces a scene analysis.
 export type EnvironmentAnalysis = {
   space_type:    string
   primary_mood:  string
@@ -77,133 +37,113 @@ export type EnvironmentAnalysis = {
   parameter_directions: Record<string, string>
 }
 
-// ── Environment analysis prompt ────────────────────────────────────────────────
+// ── sRGB ⇄ Lab colour conversion (D65) ──────────────────────────────────────────
 
-const ENVIRONMENT_ANALYSIS_PROMPT = `You are a professional restaurant and dining environment photography optimization AI.
+const Xn = 0.95047, Yn = 1.0, Zn = 1.08883
 
-Your task is to analyze a dining space or interior photo based on its VISUAL PROPERTIES, then generate optimization guidance for style transfer.
+function srgbToLinear(c: number): number {
+  c /= 255
+  return c > 0.04045 ? Math.pow((c + 0.055) / 1.055, 2.4) : c / 12.92
+}
 
----
+function linearToByte(c: number): number {
+  const v = c > 0.0031308 ? 1.055 * Math.pow(c, 1 / 2.4) - 0.055 : 12.92 * c
+  return Math.max(0, Math.min(255, Math.round(v * 255)))
+}
 
-## Step 1: Identify the space
+function fLab(t: number): number {
+  return t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116
+}
 
-Identify:
-- Space type: intimate dining room / open restaurant hall / outdoor terrace / bar / café / private room / other
-- Primary mood: warm & cozy / dramatic & moody / clean & modern / rustic & earthy / airy & bright
+function fLabInv(t: number): number {
+  const t3 = t * t * t
+  return t3 > 0.008856 ? t3 : (t - 16 / 116) / 7.787
+}
 
----
+function rgbToLab(r: number, g: number, b: number): [number, number, number] {
+  const rl = srgbToLinear(r), gl = srgbToLinear(g), bl = srgbToLinear(b)
+  const x = rl * 0.4124564 + gl * 0.3575761 + bl * 0.1804375
+  const y = rl * 0.2126729 + gl * 0.7151522 + bl * 0.0721750
+  const z = rl * 0.0193339 + gl * 0.1191920 + bl * 0.9503041
+  const fx = fLab(x / Xn), fy = fLab(y / Yn), fz = fLab(z / Zn)
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)]
+}
 
-## Step 2: Assess Overall Quality (0–10)
+function labToRgb(L: number, a: number, b: number): [number, number, number] {
+  const fy = (L + 16) / 116, fx = fy + a / 500, fz = fy - b / 200
+  const x = Xn * fLabInv(fx), y = Yn * fLabInv(fy), z = Zn * fLabInv(fz)
+  const rl =  x * 3.2404542 + y * -1.5371385 + z * -0.4985314
+  const gl =  x * -0.9692660 + y * 1.8760108 + z * 0.0415560
+  const bl =  x * 0.0556434 + y * -0.2040259 + z * 1.0572252
+  return [linearToByte(rl), linearToByte(gl), linearToByte(bl)]
+}
 
-- 8–10: Well-lit, atmosphere reads clearly, surfaces have visible texture and depth. Minimal intervention needed.
-- 4–7:  Decent but has specific lighting or color issues that could be improved.
-- 0–3:  Flat, muddy, or poorly lit — needs comprehensive enhancement.
+type LabStats = { mL: number; ma: number; mb: number; sL: number; sa: number; sb: number }
 
----
-
-## Step 3: Generate Optimization Guidance
-
-Output in 4 categories:
-
-### Lighting
-(ambient light quality, shadow behavior, directional light sources, any harsh or lost highlights)
-
-### Atmosphere
-(depth, mood clarity, environmental haze or fog, overall emotional tone)
-
-### Color
-(surface color warmth, saturation levels, color temperature consistency, any color cast issues)
-
-### Texture
-(surface detail quality: wood grain, stone, fabric, walls, flooring — sharp or muddy?)
-
----
-
-## Step 4: Parameter Directions (NO NUMBERS)
-
-Directions only:
-- increase
-- decrease
-- slightly increase
-- slightly decrease
-- keep moderate
-- reduce aggressively
-
-If a parameter already looks well-executed — output "keep moderate".
-
----
-
-## Output Format (STRICT JSON)
-
-Return ONLY this JSON:
-
-{
-  "space_type": "",
-  "primary_mood": "",
-  "quality_score": 0,
-  "editing_plan": {
-    "lighting": [],
-    "atmosphere": [],
-    "color": [],
-    "texture": []
-  },
-  "parameter_directions": {
-    "overall_brightness": "",
-    "ambient_light_warmth": "",
-    "shadow_depth": "",
-    "contrast_level": "",
-    "color_saturation": "",
-    "atmosphere_clarity": "",
-    "texture_definition": "",
-    "depth_rendering": "",
-    "color_temperature": ""
+// Per-channel mean/std of an RGB buffer in Lab space.
+function labStats(data: Buffer | Uint8Array): LabStats {
+  const n = (data.length / 3) | 0
+  let sumL = 0, suma = 0, sumb = 0
+  const lab = new Float32Array(n * 3)
+  for (let p = 0, i = 0; p < n; p++, i += 3) {
+    const [L, a, b] = rgbToLab(data[i], data[i + 1], data[i + 2])
+    lab[i] = L; lab[i + 1] = a; lab[i + 2] = b
+    sumL += L; suma += a; sumb += b
+  }
+  const mL = sumL / n, ma = suma / n, mb = sumb / n
+  let vL = 0, va = 0, vb = 0
+  for (let i = 0; i < lab.length; i += 3) {
+    vL += (lab[i] - mL) ** 2
+    va += (lab[i + 1] - ma) ** 2
+    vb += (lab[i + 2] - mb) ** 2
+  }
+  return {
+    mL, ma, mb,
+    sL: Math.sqrt(vL / n) || 1,
+    sa: Math.sqrt(va / n) || 1,
+    sb: Math.sqrt(vb / n) || 1,
   }
 }
 
----
+// Reinhard colour transfer: remap source so its Lab mean/std match the
+// reference, then blend toward the original by `t` (0–1). Geometry untouched.
+async function colorTransfer(sourceBuf: Buffer, refBuf: Buffer, t: number): Promise<Buffer> {
+  const { data: src, info } = await sharp(sourceBuf)
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true })
 
-## Rules
+  // Reference downsampled — stats don't need full resolution.
+  const { data: ref } = await sharp(refBuf)
+    .removeAlpha()
+    .resize(320, 320, { fit: 'inside', withoutEnlargement: true })
+    .raw()
+    .toBuffer({ resolveWithObject: true })
 
-- ALL output values must be in English
-- Do NOT output anything outside JSON`
+  const s = labStats(src)
+  const r = labStats(ref)
 
-// ── Build env optimization section from source analysis ────────────────────────
+  const aL = r.sL / s.sL, aA = r.sa / s.sa, aB = r.sb / s.sb
+  const out = Buffer.allocUnsafe(src.length)
 
-function buildEnvOptPrompt(env: EnvironmentAnalysis): string {
-  const score = env.quality_score ?? 5
-  const tier  = score >= 7 ? 'high' : score >= 4 ? 'mid' : 'low'
+  for (let i = 0; i < src.length; i += 3) {
+    const [L, a, b] = rgbToLab(src[i], src[i + 1], src[i + 2])
+    // Full Reinhard target…
+    const Lt = (L - s.mL) * aL + r.mL
+    const at = (a - s.ma) * aA + r.ma
+    const bt = (b - s.mb) * aB + r.mb
+    // …blended toward the original by intensity.
+    const [or, og, ob] = labToRgb(
+      L + (Lt - L) * t,
+      a + (at - a) * t,
+      b + (bt - b) * t,
+    )
+    out[i] = or; out[i + 1] = og; out[i + 2] = ob
+  }
 
-  const tonePrefix =
-    tier === 'high'
-      ? `Source space quality already high (score ${score}/10). Apply enhancements conservatively.`
-      : tier === 'mid'
-      ? `Source space quality decent (score ${score}/10). Apply targeted enhancements.`
-      : `Source space needs significant improvement (score ${score}/10). Apply comprehensive enhancements.`
-
-  const editingLines = [
-    ...env.editing_plan.lighting,
-    ...env.editing_plan.atmosphere,
-    ...env.editing_plan.color,
-    ...env.editing_plan.texture,
-  ].map(l => `- ${l}`).join('\n')
-
-  const paramEntries   = Object.entries(env.parameter_directions)
-  const relevantParams = tier === 'high'
-    ? paramEntries.filter(([, v]) => v !== 'keep moderate')
-    : paramEntries
-
-  if (tier === 'high' && relevantParams.length === 0)
-    return `Source quality ${score}/10 — no specific adjustments needed.`
-
-  const paramLines = relevantParams.map(([k, v]) => `- ${k}: ${v}`).join('\n')
-
-  return `${tonePrefix}
-
-Editing objectives:
-${editingLines}
-
-Parameter directions:
-${paramLines}`
+  return sharp(out, { raw: { width: info.width, height: info.height, channels: 3 } })
+    .png()
+    .toBuffer()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -225,28 +165,21 @@ export async function POST(request: NextRequest) {
   const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) return new Response('Unauthorized', { status: 401 })
 
-  const formData       = await request.formData()
-  const image1File     = formData.get('image1')      as File | null
-  const image2File     = formData.get('image2')      as File | null
-  const image1UrlIn    = formData.get('image1_url')  as string | null
-  const image2UrlIn    = formData.get('image2_url')  as string | null
-  const jobId          = formData.get('jobId')       as string | null
-  const intensity      = Math.min(100, Math.max(10, Number(formData.get('intensity') ?? 80)))
-  const upscale        = formData.get('upscale') === '1'
-  const envAnalysisRaw = formData.get('env_analysis') as string | null
-
-  let providedEnvAnalysis: EnvironmentAnalysis | null = null
-  if (envAnalysisRaw) {
-    try { providedEnvAnalysis = JSON.parse(envAnalysisRaw) } catch { /* ignore */ }
-  }
+  const formData    = await request.formData()
+  const image1File  = formData.get('image1')     as File | null
+  const image2File  = formData.get('image2')     as File | null
+  const image1UrlIn = formData.get('image1_url') as string | null
+  const image2UrlIn = formData.get('image2_url') as string | null
+  const jobId       = formData.get('jobId')      as string | null
+  const intensity   = Math.min(100, Math.max(10, Number(formData.get('intensity') ?? 80)))
+  const upscale     = formData.get('upscale') === '1'
 
   if ((!image1File && !image1UrlIn) || (!image2File && !image2UrlIn) || !jobId)
     return new Response('Missing required fields', { status: 400 })
 
-  const openai     = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-  const replicate  = new Replicate({ auth: process.env.REPLICATE_API_TOKEN })
-  const admin      = createAdminClient()
-  const encoder    = new TextEncoder()
+  const replicate = new Replicate({ auth: process.env.REPLICATE_API_TOKEN })
+  const admin     = createAdminClient()
+  const encoder   = new TextEncoder()
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -287,62 +220,13 @@ export async function POST(request: NextRequest) {
           status: 'processing',
         })
 
-        // ── Step 2: Analyse the SOURCE space (UI panel + opt hints) ────
-        send('progress', { step: 'analyzing', message: 'Analysing your space & reading reference…' })
+        // ── Step 2: Colour/tone transfer (geometry untouched) ─────────
+        send('progress', { step: 'generating', message: 'Matching reference colour & tone…' })
 
-        let envAnalysis: EnvironmentAnalysis | null = providedEnvAnalysis
-        if (!envAnalysis) {
-          const envAnalysisResult = await openai.chat.completions.create({
-            model: 'gpt-4o-mini', max_tokens: 1000,
-            messages: [{
-              role: 'user',
-              content: [
-                { type: 'text', text: ENVIRONMENT_ANALYSIS_PROMPT },
-                { type: 'image_url', image_url: { url: image1Url, detail: 'high' } },
-              ],
-            }],
-          })
-          const raw = envAnalysisResult.choices[0].message.content?.trim() ?? ''
-          try {
-            const match = raw.match(/\{[\s\S]*\}/)
-            if (match) envAnalysis = JSON.parse(match[0])
-          } catch { /* continue without analysis */ }
-        }
+        const outputBuffer = await colorTransfer(image1Buf, image2Buf, intensity / 100)
+        const outputUrl    = await upload(outputBuffer, 'output', 'image/png')
 
-        const envOptPrompt = envAnalysis ? buildEnvOptPrompt(envAnalysis) : ''
-
-        // ── Step 3: Style transfer — model sees BOTH images ───────────
-        send('progress', { step: 'generating', message: 'Applying reference atmosphere…' })
-
-        const toPng = (buf: Buffer) =>
-          sharp(buf).resize(1024, 1024, { fit: 'inside', withoutEnlargement: true }).png().toBuffer()
-
-        const [origPng, refPng] = await Promise.all([toPng(image1Buf), toPng(image2Buf)])
-        const origFile = await toFile(origPng, 'original.png',  { type: 'image/png' })
-        const refFile  = await toFile(refPng,  'reference.png', { type: 'image/png' })
-
-        const prompt = buildTransferPrompt(intensity, envOptPrompt)
-
-        const editResult = await openai.images.edit({
-          model:          'gpt-image-1.5',
-          image:          [origFile, refFile],
-          prompt,
-          input_fidelity: 'high',
-          quality:        'high',
-          size:           '1536x1024',
-          output_format:  'png',
-        })
-
-        const imgData = editResult.data?.[0]
-        let outputBuffer: Buffer
-        if (imgData?.b64_json)     outputBuffer = Buffer.from(imgData.b64_json, 'base64')
-        else if (imgData?.url)     outputBuffer = await fetchBuffer(imgData.url)
-        else throw new Error('gpt-image-1 returned no image data')
-
-        // ── Step 4: Upload result ─────────────────────────────────────
-        const outputUrl = await upload(outputBuffer, 'output', 'image/png')
-
-        // ── Step 5: Optional HD upscale via Replicate Real-ESRGAN ────
+        // ── Step 3: Optional HD upscale via Replicate Real-ESRGAN ────
         let hdOutputUrl: string | null = null
         if (upscale) {
           send('progress', { step: 'upscaling', message: 'Enhancing to HD…' })
@@ -363,7 +247,7 @@ export async function POST(request: NextRequest) {
 
         await admin.from('jobs').update({ output_url: outputUrl, status: 'done' }).eq('id', jobId)
 
-        send('done', { outputUrl, hdOutputUrl, envAnalysis })
+        send('done', { outputUrl, hdOutputUrl })
 
       } catch (err) {
         const message = err instanceof Error ? err.message : 'An unexpected error occurred'
